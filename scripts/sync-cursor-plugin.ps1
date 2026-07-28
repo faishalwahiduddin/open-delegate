@@ -34,12 +34,27 @@ foreach ($rel in @("dist", "node_modules", "skills", ".cursor-plugin")) {
 	Sync-Tree $rel
 }
 
-foreach ($f in @("mcp.json", "package.json", "README.md")) {
+foreach ($f in @("package.json", "README.md")) {
 	$from = Join-Path $Src $f
 	if (Test-Path $from) {
 		Copy-Item -Force $from (Join-Path $Dst $f)
 	}
 }
+
+# Cursor does not reliably cwd to the plugin dir on Windows — relative
+# "dist/index.js" resolves under the user profile (MODULE_NOT_FOUND). Write an
+# absolute entry path into the *installed* mcp.json only.
+$Entry = (Join-Path $Dst "dist\index.js") -replace '\\', '/'
+$Mcp = @{
+	mcpServers = @{
+		"open-delegate" = @{
+			command = "node"
+			args = @($Entry)
+		}
+	}
+} | ConvertTo-Json -Depth 5
+Set-Content -Path (Join-Path $Dst "mcp.json") -Value $Mcp -Encoding utf8
+Write-Host "Wrote installed mcp.json with absolute entry: $Entry"
 
 # Mirror the skill into the global skills root (same pattern as creative-corpus/creative-operator)
 $GlobalSkills = Join-Path $env:USERPROFILE ".cursor\skills"

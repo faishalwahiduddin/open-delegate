@@ -1,6 +1,6 @@
 {
   "name": "open-delegate",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha",
   "private": true,
   "description": "Cursor plugin: MCP bridge that delegates work to OpenCode sessions.",
   "type": "module",
