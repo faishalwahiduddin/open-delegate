@@ -1,0 +1,31 @@
+{
+  "name": "open-delegate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cursor plugin: MCP bridge that delegates work to OpenCode sessions.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration --no-file-parallelism",
+    "e2e": "npm run build && node scripts/e2e-smoke.mjs",
+    "validate:skill": "node scripts/validate-skill.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opencode-ai/sdk": "^1.18.8",
+    "cross-spawn": "^7.0.6",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
