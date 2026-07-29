@@ -187,6 +187,15 @@ describe("suggestModels", () => {
 		const policy = loadModelPolicy({ OPEN_DELEGATE_ODE_MODELS: "opencode/only-one" });
 		expect(suggestModels(undefined, policy, 5)).toEqual(["opencode/only-one"]);
 	});
+
+	it("blends live connected ids into suggestions when provided", () => {
+		const policy = loadModelPolicy({ OPEN_DELEGATE_ODE_MODELS: "opencode/curated" });
+		const suggestions = suggestModels("flash", policy, 5, [
+			"opencode/deepseek-v4-flash-free",
+			"openrouter/qwen/qwen3.7-flash",
+		]);
+		expect(suggestions.some((s) => s.includes("flash"))).toBe(true);
+	});
 });
 
 describe("formatPolicyForToolDescription", () => {

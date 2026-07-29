@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RuntimeCapacityError, RuntimeManager } from "../../src/runtimeManager.js";
+import { RuntimeManager } from "../../src/runtimeManager.js";
 import type { OpencodeRuntime, RuntimeOptions } from "../../src/runtime.js";
 
 function makeFakeRuntime(onCrash?: RuntimeOptions["onCrash"]) {
@@ -12,7 +12,6 @@ function makeFakeRuntime(onCrash?: RuntimeOptions["onCrash"]) {
 			runtime.state = "dead";
 		}),
 	};
-	// Allow tests to simulate a crash by calling the captured onCrash callback.
 	(runtime as unknown as { __triggerCrash: () => void }).__triggerCrash = () => {
 		runtime.state = "dead";
 		onCrash?.({ code: 1, signal: null });
@@ -40,7 +39,7 @@ describe("RuntimeManager", () => {
 		expect(second.runtime).toBe(first.runtime);
 	});
 
-	it("dedupes concurrent acquisitions for the same override config while starting", async () => {
+	it("dedupes concurrent acquisitions while starting", async () => {
 		let resolveStart!: (r: ReturnType<typeof makeFakeRuntime>) => void;
 		const startRuntime = vi.fn(
 			(options: RuntimeOptions) =>
@@ -50,58 +49,19 @@ describe("RuntimeManager", () => {
 		);
 		const manager = new RuntimeManager({ startRuntime: startRuntime as never });
 
-		const config = { content: '{"model":"opencode/grok-code-fast-1"}' };
-		const p1 = manager.acquire(config);
-		const p2 = manager.acquire(config);
+		const p1 = manager.acquire();
+		const p2 = manager.acquire();
 		resolveStart();
 		const [r1, r2] = await Promise.all([p1, p2]);
 
 		expect(startRuntime).toHaveBeenCalledTimes(1);
 		expect(r1.key).toBe(r2.key);
-		expect(r1.key).not.toBe("default");
-	});
-
-	it("enforces the runtime cap for override configs", async () => {
-		const startRuntime = vi.fn(async (options: RuntimeOptions) => makeFakeRuntime(options.onCrash));
-		const manager = new RuntimeManager({ startRuntime, maxRuntimes: 2 });
-
-		await manager.acquire(); // default -> 1 runtime
-		await manager.acquire({ content: "a" }); // override #1 -> 2 runtimes, at cap
-
-		await expect(manager.acquire({ content: "b" })).rejects.toThrow(RuntimeCapacityError);
-	});
-
-	it("disposes an idle override runtime after the grace period, but not before", async () => {
-		const startRuntime = vi.fn(async (options: RuntimeOptions) => makeFakeRuntime(options.onCrash));
-		const manager = new RuntimeManager({ startRuntime, graceMs: 1000 });
-
-		const { key, runtime } = await manager.acquire({ content: "a" });
-		manager.release(key);
-
-		vi.advanceTimersByTime(500);
-		expect(manager.getRuntime(key)).toBe(runtime);
-
-		vi.advanceTimersByTime(600);
-		expect(runtime.dispose).toHaveBeenCalledTimes(1);
-	});
-
-	it("cancels a pending dispose if the runtime is re-acquired within the grace period", async () => {
-		const startRuntime = vi.fn(async (options: RuntimeOptions) => makeFakeRuntime(options.onCrash));
-		const manager = new RuntimeManager({ startRuntime, graceMs: 1000 });
-
-		const { key, runtime } = await manager.acquire({ content: "a" });
-		manager.release(key);
-		vi.advanceTimersByTime(500);
-
-		await manager.acquire({ content: "a" });
-		vi.advanceTimersByTime(600);
-
-		expect(runtime.dispose).not.toHaveBeenCalled();
+		expect(r1.key).toBe("default");
 	});
 
 	it("never schedules disposal for the default runtime", async () => {
 		const startRuntime = vi.fn(async (options: RuntimeOptions) => makeFakeRuntime(options.onCrash));
-		const manager = new RuntimeManager({ startRuntime, graceMs: 10 });
+		const manager = new RuntimeManager({ startRuntime });
 
 		const { key, runtime } = await manager.acquire();
 		manager.release(key);
@@ -129,17 +89,23 @@ describe("RuntimeManager", () => {
 		expect(second.runtime).not.toBe(runtime);
 	});
 
-	it("shutdownAll disposes every runtime and clears state", async () => {
+	it("shutdownAll disposes the runtime and clears state", async () => {
 		const startRuntime = vi.fn(async (options: RuntimeOptions) => makeFakeRuntime(options.onCrash));
 		const manager = new RuntimeManager({ startRuntime });
 
 		const a = await manager.acquire();
-		const b = await manager.acquire({ content: "a" });
 
 		await manager.shutdownAll();
 
 		expect(a.runtime.dispose).toHaveBeenCalledTimes(1);
-		expect(b.runtime.dispose).toHaveBeenCalledTimes(1);
 		expect(manager.getRuntime("default")).toBeUndefined();
+	});
+
+	it("getRuntime ignores unknown keys", async () => {
+		const startRuntime = vi.fn(async (options: RuntimeOptions) => makeFakeRuntime(options.onCrash));
+		const manager = new RuntimeManager({ startRuntime });
+		await manager.acquire();
+		expect(manager.getRuntime("override:abc")).toBeUndefined();
+		expect(manager.getRuntime(undefined)).toBeUndefined();
 	});
 });

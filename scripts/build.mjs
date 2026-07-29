@@ -3,9 +3,10 @@
  * Bundle src/index.ts → single dist/index.cjs (no runtime node_modules).
  * CJS output so deps like cross-spawn that use require("child_process") work.
  * Typecheck first via tsc --noEmit; esbuild does the emit.
+ * Also copies src/data/ → dist/data/ so runtime JSON catalogs are adjacent to the bundle.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
@@ -45,5 +46,9 @@ const body = readFileSync(OUT, "utf8");
 if (!body.startsWith("#!")) {
 	writeFileSync(OUT, `#!/usr/bin/env node\n${body}`);
 }
+
+// Copy data catalogs next to the bundle. esbuild rewrites import.meta.url in CJS
+// to a fileURL for the outfile, so `./data/...` resolves relative to dist/.
+cpSync(join(ROOT, "src", "data"), join(DIST, "data"), { recursive: true });
 
 console.log(`built dist/index.cjs (@verbalize/open-delegate@${pkg.version})`);

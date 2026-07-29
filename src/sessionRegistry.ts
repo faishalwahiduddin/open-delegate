@@ -1,4 +1,3 @@
-import type { ConfigOverride } from "./configSpec.js";
 import type { ErrorCode } from "./mcpResult.js";
 
 export type SessionStatus = "starting" | "running" | "done" | "error" | "cancelled";
@@ -10,7 +9,6 @@ export interface SessionEntry {
 	opencodeSessionId: string | undefined;
 	/** Runtime pool key this session lives on. Undefined only while status is "starting". */
 	runtimeKey: string | undefined;
-	config: ConfigOverride | undefined;
 	previewUrl: string | undefined;
 	status: SessionStatus;
 	createdAt: number;
@@ -21,14 +19,16 @@ export interface SessionEntry {
 	errorCode: ErrorCode | undefined;
 	/** True when the terminal assistant message had non-empty text parts; false when known empty; unset while running/unknown. */
 	hasFinalText: boolean | undefined;
+	/** Capped final assistant text, set when a session reaches a terminal status with text. */
+	answer: string | undefined;
 }
 
-export type FinalizePatch = Partial<Pick<SessionEntry, "hasFinalText" | "errorCode">>;
+export type FinalizePatch = Partial<Pick<SessionEntry, "hasFinalText" | "errorCode" | "answer">>;
 
 const TERMINAL_STATUSES: ReadonlySet<SessionStatus> = new Set(["done", "error", "cancelled"]);
 
 export interface SessionRegistryOptions {
-	/** How long a terminal session stays visible to ode_status/ode_transcript before being pruned. */
+	/** How long a terminal session stays visible to ode_await/ode_transcript before being pruned. */
 	pruneAfterMs?: number;
 	now?: () => number;
 }
@@ -55,7 +55,6 @@ export class SessionRegistry {
 	create(params: {
 		id: string;
 		runtimeKey: string;
-		config: ConfigOverride | undefined;
 		previewUrl: string;
 		opencodeSessionId?: string;
 	}): SessionEntry {
@@ -65,7 +64,6 @@ export class SessionRegistry {
 			id: params.id,
 			opencodeSessionId: params.opencodeSessionId ?? params.id,
 			runtimeKey: params.runtimeKey,
-			config: params.config,
 			previewUrl: params.previewUrl,
 			status: "running",
 			createdAt: timestamp,
@@ -74,6 +72,7 @@ export class SessionRegistry {
 			errorMessage: undefined,
 			errorCode: undefined,
 			hasFinalText: undefined,
+			answer: undefined,
 		};
 		this.entries.set(params.id, entry);
 		return entry;
@@ -85,14 +84,13 @@ export class SessionRegistry {
 	 * blocking on a cold `opencode serve` spawn. Call attachRuntime() once
 	 * setup succeeds, or failStarting() if it doesn't.
 	 */
-	createPending(params: { id: string; config: ConfigOverride | undefined }): SessionEntry {
+	createPending(params: { id: string }): SessionEntry {
 		this.pruneNow();
 		const timestamp = this.now();
 		const entry: SessionEntry = {
 			id: params.id,
 			opencodeSessionId: undefined,
 			runtimeKey: undefined,
-			config: params.config,
 			previewUrl: undefined,
 			status: "starting",
 			createdAt: timestamp,
@@ -101,6 +99,7 @@ export class SessionRegistry {
 			errorMessage: undefined,
 			errorCode: undefined,
 			hasFinalText: undefined,
+			answer: undefined,
 		};
 		this.entries.set(params.id, entry);
 		return entry;
@@ -136,6 +135,7 @@ export class SessionRegistry {
 		entry.errorMessage = message;
 		entry.errorCode = code;
 		entry.hasFinalText = false;
+		entry.answer = undefined;
 		entry.updatedAt = this.now();
 		entry.terminalAt = entry.updatedAt;
 		return true;
@@ -156,6 +156,7 @@ export class SessionRegistry {
 		if (!TERMINAL_STATUSES.has(status)) {
 			entry.hasFinalText = undefined;
 			entry.errorCode = undefined;
+			entry.answer = undefined;
 		}
 		return entry;
 	}
@@ -163,7 +164,7 @@ export class SessionRegistry {
 	/**
 	 * Synchronous compare-and-set: only transitions to a terminal status if the
 	 * entry is still "running". Safe to call from multiple concurrent pollers
-	 * (ode_status/ode_await) without double-finalizing, since there is no
+	 * (ode_await) without double-finalizing, since there is no
 	 * `await` between the check and the mutation.
 	 */
 	finalizeIfRunning(id: string, status: SessionStatus, errorMessage?: string, patch?: FinalizePatch): boolean {
@@ -175,6 +176,7 @@ export class SessionRegistry {
 		entry.terminalAt = entry.updatedAt;
 		if (patch?.hasFinalText !== undefined) entry.hasFinalText = patch.hasFinalText;
 		if (patch?.errorCode !== undefined) entry.errorCode = patch.errorCode;
+		if (patch?.answer !== undefined) entry.answer = patch.answer;
 		return true;
 	}
 
@@ -186,6 +188,7 @@ export class SessionRegistry {
 				entry.status = "error";
 				entry.errorMessage = message;
 				entry.hasFinalText = false;
+				entry.answer = undefined;
 				entry.updatedAt = this.now();
 				entry.terminalAt = entry.updatedAt;
 				affected.push(entry);

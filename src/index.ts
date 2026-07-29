@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { DelegateContext } from "./context.js";
 import { Logger, resolveLogLevel } from "./log.js";
 import { describeError } from "./mcpResult.js";
+import { ModelAvailabilityCache } from "./modelAvailability.js";
 import { loadModelPolicy } from "./modelPolicy.js";
 import { RuntimeManager } from "./runtimeManager.js";
 import { SessionRegistry } from "./sessionRegistry.js";
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
 		runtimeManager,
 		registry,
 		modelPolicy: loadModelPolicy(),
+		modelAvailability: new ModelAvailabilityCache(),
 		logger,
 		version,
 	};
@@ -93,7 +95,11 @@ async function main(): Promise<void> {
 	// blocks server startup, and a failure here (e.g. opencode not installed)
 	// is just logged - the real error still surfaces from ode_delegate itself.
 	void runtimeManager.acquire().then(
-		({ key }) => runtimeManager.release(key),
+		({ key, runtime }) => {
+			// Warm the provider snapshot so the first delegate can fail-fast on bad models.
+			void ctx.modelAvailability.tryGetSnapshot(runtime.client);
+			runtimeManager.release(key);
+		},
 		(err) => logger.warn("prewarm_failed", { message: describeError(err) }),
 	);
 }

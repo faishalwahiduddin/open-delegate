@@ -97,7 +97,7 @@ describe.runIf(await isOpencodeAvailable())("opencode integration", () => {
 
 			const created = await runtime.client.session.create({ throwOnError: true });
 			const sessionId = created.data.id;
-			registry.create({ id: sessionId, runtimeKey: key, config: undefined, previewUrl: runtime.url });
+			registry.create({ id: sessionId, runtimeKey: key, previewUrl: runtime.url });
 
 			await runtime.client.session.promptAsync({
 				path: { id: sessionId },
@@ -124,7 +124,7 @@ describe.runIf(await isOpencodeAvailable())("opencode integration", () => {
 
 			const created = await runtime.client.session.create({ throwOnError: true });
 			const sessionId = created.data.id;
-			registry.create({ id: sessionId, runtimeKey: key, config: undefined, previewUrl: runtime.url });
+			registry.create({ id: sessionId, runtimeKey: key, previewUrl: runtime.url });
 
 			await runtime.client.session.promptAsync({
 				path: { id: sessionId },
@@ -152,7 +152,7 @@ describe.runIf(await isOpencodeAvailable())("opencode integration", () => {
 
 			const created = await runtime.client.session.create({ throwOnError: true });
 			const sessionId = created.data.id;
-			registry.create({ id: sessionId, runtimeKey: key, config: undefined, previewUrl: runtime.url });
+			registry.create({ id: sessionId, runtimeKey: key, previewUrl: runtime.url });
 
 			await runtime.client.session.promptAsync({
 				path: { id: sessionId },
@@ -165,8 +165,8 @@ describe.runIf(await isOpencodeAvailable())("opencode integration", () => {
 			const first = await waitForTerminal({ runtimeManager, registry }, sessionId, 30_000);
 			expect(first?.status).toBe("done");
 
-			// ode_resume's own logic: re-acquire the session's original runtime, then prompt again.
-			const reacquired = await runtimeManager.acquire(registry.get(sessionId)?.config);
+			// Resume path: re-acquire the shared default runtime, then prompt again.
+			const reacquired = await runtimeManager.acquire();
 			await reacquired.runtime.client.session.promptAsync({
 				path: { id: sessionId },
 				body: { parts: [{ type: "text", text: "What was the secret code? Reply with just the code." }] },
@@ -190,7 +190,7 @@ describe.runIf(await isOpencodeAvailable())("opencode integration", () => {
 
 			const created = await runtime.client.session.create({ throwOnError: true });
 			const sessionId = created.data.id;
-			registry.create({ id: sessionId, runtimeKey: key, config: undefined, previewUrl: runtime.url });
+			registry.create({ id: sessionId, runtimeKey: key, previewUrl: runtime.url });
 
 			await runtime.client.session.promptAsync({
 				path: { id: sessionId },
@@ -216,7 +216,7 @@ describe.runIf(await isOpencodeAvailable())("opencode integration", () => {
 
 			const created = await runtime.client.session.create({ throwOnError: true });
 			const sessionId = created.data.id;
-			registry.create({ id: sessionId, runtimeKey: key, config: undefined, previewUrl: runtime.url });
+			registry.create({ id: sessionId, runtimeKey: key, previewUrl: runtime.url });
 
 			await runtime.client.session.promptAsync({
 				path: { id: sessionId },

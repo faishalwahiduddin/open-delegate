@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { DelegateContext } from "../../src/context.js";
 import { Logger } from "../../src/log.js";
+import { ModelAvailabilityCache } from "../../src/modelAvailability.js";
 import { loadModelPolicy } from "../../src/modelPolicy.js";
 import { RuntimeManager } from "../../src/runtimeManager.js";
 import { SessionRegistry } from "../../src/sessionRegistry.js";
@@ -27,7 +28,7 @@ function parse(result: CallToolResult): Record<string, unknown> {
 	return JSON.parse(result.content[0]!.text as string) as Record<string, unknown>;
 }
 
-function fakeRuntime(overrides: { createFails?: boolean; promptFails?: boolean } = {}) {
+function fakeRuntime(overrides: { createFails?: boolean; promptFails?: boolean; providerList?: unknown } = {}) {
 	return {
 		pid: 4321,
 		url: "http://127.0.0.1:1",
@@ -43,6 +44,19 @@ function fakeRuntime(overrides: { createFails?: boolean; promptFails?: boolean }
 				}),
 				abort: vi.fn(async () => ({})),
 			},
+			provider: {
+				list: vi.fn(async () => ({
+					data: overrides.providerList ?? {
+						all: [
+							{
+								id: "opencode",
+								models: { "deepseek-v4-flash-free": { id: "deepseek-v4-flash-free", tool_call: true } },
+							},
+						],
+						connected: ["opencode"],
+					},
+				})),
+			},
 		},
 	};
 }
@@ -56,6 +70,7 @@ beforeEach(() => {
 		runtimeManager: new RuntimeManager(),
 		registry: new SessionRegistry(),
 		modelPolicy: loadModelPolicy({}),
+		modelAvailability: new ModelAvailabilityCache(),
 		logger: new Logger({ logDir: dir, write: () => {} }),
 		version: "0.0.0-test",
 	};
@@ -128,6 +143,31 @@ describe("ode_delegate async setup (returns before acquire resolves)", () => {
 		expect(parse(result)).toMatchObject({ code: "SESSION_CREATE_FAILED" });
 	});
 
+	it("fails fast with MODEL_NOT_AVAILABLE when the model is not in the runtime catalog", async () => {
+		const runtime = fakeRuntime({
+			providerList: {
+				all: [{ id: "opencode", models: { "deepseek-v4-flash-free": { id: "deepseek-v4-flash-free" } } }],
+				connected: ["opencode"],
+			},
+		});
+		ctx.runtimeManager = {
+			acquire: vi.fn(async () => ({ key: "default", runtime })),
+			release: vi.fn(),
+			getRuntime: vi.fn(() => runtime),
+		} as unknown as RuntimeManager;
+
+		const { server, handlers } = fakeServer();
+		registerOdeDelegate(server, ctx, { returnGraceMs: 2500, setupTimeoutMs: 5000 });
+
+		const result = await handlers.get("ode_delegate")!({
+			prompt: "hi",
+			model: "opencode/does-not-exist-anywhere",
+		});
+		expect(result.isError).toBe(true);
+		expect(parse(result)).toMatchObject({ code: "MODEL_NOT_AVAILABLE" });
+		expect(runtime.client.session.create).not.toHaveBeenCalled();
+	});
+
 	it("discards (aborts + releases) a session that finishes setup after being cancelled while starting", async () => {
 		let resolveAcquire!: (v: { key: string; runtime: ReturnType<typeof fakeRuntime> }) => void;
 		const runtime = fakeRuntime();
@@ -144,7 +184,6 @@ describe("ode_delegate async setup (returns before acquire resolves)", () => {
 		const result = await handlers.get("ode_delegate")!({ prompt: "hi" });
 		const sessionId = parse(result).sessionId as string;
 
-		// Simulate ode_cancel racing the still-in-flight background setup.
 		ctx.registry.setStatus(sessionId, "cancelled");
 		resolveAcquire({ key: "default", runtime });
 
@@ -155,7 +194,7 @@ describe("ode_delegate async setup (returns before acquire resolves)", () => {
 
 	it("fails a stuck session once the setup deadline elapses, independent of the grace window", async () => {
 		ctx.runtimeManager = {
-			acquire: vi.fn(() => new Promise(() => {})), // never resolves
+			acquire: vi.fn(() => new Promise(() => {})),
 			release: vi.fn(),
 			getRuntime: vi.fn(() => undefined),
 		} as unknown as RuntimeManager;

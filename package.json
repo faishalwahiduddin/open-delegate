@@ -1,6 +1,6 @@
 {
 	"name": "@verbalize/open-delegate",
-	"version": "0.1.0-alpha",
+	"version": "0.2.0-alpha",
 	"description": "Cursor plugin: MCP bridge that delegates work to OpenCode sessions.",
 	"type": "module",
 	"engines": {
@@ -25,6 +25,7 @@
 		"test:integration": "vitest run tests/integration --no-file-parallelism",
 		"e2e": "npm run build && node scripts/e2e-smoke.mjs",
 		"validate:skill": "node scripts/validate-skill.mjs",
+		"refresh:models": "node scripts/refresh-models.mjs",
 		"register:local": "node scripts/register-local-plugin.mjs",
 		"prepublishOnly": "npm run build"
 	},

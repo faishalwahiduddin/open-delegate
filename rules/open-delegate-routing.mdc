@@ -14,7 +14,7 @@ If a persona / Task request names a model that is:
 1. in **ODE_MODELS** — the built-in cheap force catalog, or whatever `OPEN_DELEGATE_ODE_MODELS` / the live `ode_delegate` tool description lists, **or**
 2. an OpenCode id starting with `openrouter/`,
 
-you **must** call `ode_delegate` then `ode_await` (or `ode_status`), **not** the native Task / subagent tool.
+you **must** call `ode_delegate` then `ode_await` (or `ode_await` with `timeoutMs: 0` for a peek), **not** the native Task / subagent tool.
 
 Pass the OpenCode `provider/model` id as-is. Do not invent Cursor-slug remaps and do not “helpfully” upgrade to Anthropic/OpenAI flagships (Opus, Sonnet, Fable, GPT Sol/Terra).
 
@@ -24,4 +24,4 @@ Use the native Task / subagent tool only when the named model is **Cursor-native
 
 ## How to drive the bridge
 
-Follow skill `ode-delegate` for the core loop (`ode_delegate` → `ode_await` → transcript / resume / cancel). Omit `model` to use `OPEN_DELEGATE_DEFAULT_MODEL` or the OpenCode server default (prefer a cheap Zen free pin when configuring).
+Follow skill `ode-delegate` for the core loop (`ode_delegate` → `ode_await` → transcript / resume via `ode_delegate({ sessionId })` / cancel). Omit `model` to use `OPEN_DELEGATE_DEFAULT_MODEL` or the OpenCode server default (prefer a cheap Zen free pin when configuring). Optional `waitMs` on `ode_delegate` can collapse short tasks into one tool call.

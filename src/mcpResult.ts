@@ -10,7 +10,7 @@ export type ErrorCode =
 	| "INVALID_MODEL"
 	| "MODEL_NOT_ALLOWED"
 	| "MODEL_DENIED"
-	| "RUNTIME_CAPACITY"
+	| "MODEL_NOT_AVAILABLE"
 	| "BINARY_NOT_FOUND"
 	| "RUNTIME_STARTUP_FAILED"
 	| "SESSION_CREATE_FAILED"
@@ -84,8 +84,8 @@ export function codeForError(err: unknown): ErrorCode {
 				return "MODEL_NOT_ALLOWED";
 			case "ModelDeniedError":
 				return "MODEL_DENIED";
-			case "RuntimeCapacityError":
-				return "RUNTIME_CAPACITY";
+			case "ModelNotAvailableError":
+				return "MODEL_NOT_AVAILABLE";
 			case "OpencodeBinaryNotFoundError":
 				return "BINARY_NOT_FOUND";
 			case "RuntimeStartupError":

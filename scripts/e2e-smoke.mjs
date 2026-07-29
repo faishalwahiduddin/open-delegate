@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverEntry = process.argv[2] ? path.resolve(process.argv[2]) : path.join(__dirname, "..", "dist", "index.cjs");
 const FREE_MODEL = "opencode/deepseek-v4-flash-free";
 
-const EXPECTED_TOOLS = ["ode_delegate", "ode_await", "ode_status", "ode_transcript", "ode_cancel", "ode_resume", "ode_diagnostics"];
+const EXPECTED_TOOLS = ["ode_delegate", "ode_await", "ode_transcript", "ode_cancel", "ode_diagnostics"];
 
 function log(step, detail = "") {
 	console.log(`[e2e] ${step}${detail ? ` ${detail}` : ""}`);
@@ -110,9 +110,14 @@ async function main() {
 	}
 	log("transcript contains expected reply");
 
-	log("calling ode_status on the same finished session (should stay done)...");
-	const statusResult = await callTool("ode_status", { sessionId });
+	log("calling ode_await(timeoutMs:0) on the same finished session (should stay done)...");
+	const statusResult = await callTool("ode_await", { sessionId, timeoutMs: 0 });
 	if (statusResult.status !== "done") fail(`expected cached status "done", got: ${JSON.stringify(statusResult)}`);
+	if (typeof statusResult.answer === "string" && statusResult.answer.toUpperCase().includes("PONG")) {
+		log("inline answer field contains expected reply");
+	} else {
+		log("inline answer field present:", JSON.stringify(statusResult.answer));
+	}
 
 	log("calling ode_cancel on an unknown sessionId (should fail cleanly, not crash)...");
 	const bogusResult = await client.callTool({ name: "ode_cancel", arguments: { sessionId: "does-not-exist" } });

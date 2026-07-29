@@ -3,10 +3,12 @@
 Curated OpenCode `provider/model` pins for `ode_delegate`. Goal: **$/task**, not AAA Anthropic/OpenAI quality.
 
 Full research catalog: [`docs/MODELS_GROUND_TRUTH.md`](../../../docs/MODELS_GROUND_TRUTH.md).
+Built-in JSON source of truth: [`src/data/ode-models.default.json`](../../../src/data/ode-models.default.json).
 
 ## Built-in ODE_MODELS (force-routing)
 
-When unset, `OPEN_DELEGATE_ODE_MODELS` defaults to this cheap set. Soft rule: if a Task names one of these (or any `openrouter/…` id), use `ode_delegate` + `ode_await`, not native Task.
+When unset, `OPEN_DELEGATE_ODE_MODELS` / `OPEN_DELEGATE_ODE_MODELS_FILE` default to this cheap set.
+Soft rule: if a Task names one of these (or any `openrouter/…` id), use `ode_delegate` + `ode_await`, not native Task.
 
 | Id | Role |
 |----|------|
@@ -25,6 +27,19 @@ When unset, `OPEN_DELEGATE_ODE_MODELS` defaults to this cheap set. Soft rule: if
 | `openrouter/x-ai/grok-4.5` | Competitive mid |
 
 **Out of curated defaults:** `openrouter/anthropic/claude-opus-5`, `…/claude-sonnet-5`, `…/claude-fable-5`, `openrouter/openai/gpt-5.6-sol`, `…/gpt-5.6-terra`. Operators may still pass them if allow list permits.
+
+## Live availability
+
+Curated ≠ available. open-delegate queries the running OpenCode server's `provider.list()`
+and fails fast with `MODEL_NOT_AVAILABLE` when a model is missing from the catalog or its
+provider is not connected. Suggestions in error hints prefer models that are currently
+connected when a snapshot is cached.
+
+Refresh the curated list against a live runtime (report only):
+
+```bash
+npm run refresh:models
+```
 
 ## Suggested by job
 

@@ -8,6 +8,8 @@ import type { SessionEntry, SessionRegistry } from "./sessionRegistry.js";
 const TOOL_INPUT_PREVIEW_CHARS = 200;
 const TOOL_OUTPUT_PREVIEW_CHARS = 300;
 const STUCK_LOG_TAIL_BYTES = 8 * 1024;
+/** Cap for the inline `answer` field returned by ode_await / ode_delegate(waitMs). */
+export const ANSWER_CAP_CHARS = 4_000;
 const AUTH_BUDGET_LOG_RE = /auth|401|403|402|budget|credit|quota|billing|api.?key|unauthorized/i;
 const AUTH_NAME_RE = /^ProviderAuthError$/i;
 const AUTH_TEXT_RE = /auth|401|403|unauthorized|api.?key|invalid.?key|forbidden/i;
@@ -173,7 +175,7 @@ export interface RefreshSessionDeps {
 /**
  * Polls OpenCode's own session status + last message to decide whether a
  * "running" registry entry has actually finished, then finalizes it exactly
- * once. Idempotent and safe to call from both ode_status and ode_await.
+ * once. Idempotent and safe to call from ode_await (and ode_delegate waitMs).
  *
  * Guards against the promptAsync startup race (status can briefly still read
  * "idle"/undefined the instant after the 204 response, before OpenCode flips
@@ -234,7 +236,9 @@ export async function refreshSessionStatus(
 
 	if (lastMessage && lastMessage.info.role === "assistant") {
 		const assistant = lastMessage.info as AssistantMessage;
-		const hasFinalText = extractText(lastMessage.parts).length > 0;
+		const text = extractText(lastMessage.parts);
+		const hasFinalText = text.length > 0;
+		const answer = hasFinalText ? truncate(text, ANSWER_CAP_CHARS) : undefined;
 
 		if (assistant.error) {
 			const classified = classifyAssistantError(assistant.error);
@@ -248,6 +252,7 @@ export async function refreshSessionStatus(
 			const finalized = deps.registry.finalizeIfRunning(entry.id, "error", classified.message, {
 				hasFinalText,
 				errorCode: classified.code,
+				answer,
 			});
 			if (finalized) deps.runtimeManager.release(entry.runtimeKey);
 			return deps.registry.get(entry.id) ?? entry;
@@ -256,7 +261,7 @@ export async function refreshSessionStatus(
 		// Still generating (or provider retrying) without a terminal error yet.
 		if (inFlight) return entry;
 
-		const finalized = deps.registry.finalizeIfRunning(entry.id, "done", undefined, { hasFinalText });
+		const finalized = deps.registry.finalizeIfRunning(entry.id, "done", undefined, { hasFinalText, answer });
 		if (finalized) deps.runtimeManager.release(entry.runtimeKey);
 		return deps.registry.get(entry.id) ?? entry;
 	}
@@ -321,7 +326,7 @@ export async function fetchTranscript(
 			if (toolCount > 0) {
 				body =
 					`(no final text — ${toolCount} tool call(s); see ode_transcript with includeToolCalls, ` +
-					`or ode_resume to ask for a written summary)`;
+					`or ode_delegate({ sessionId }) to ask for a written summary)`;
 			}
 		}
 

@@ -88,7 +88,7 @@ describe("codeForError", () => {
 		["InvalidModelSpecError", "INVALID_MODEL"],
 		["ModelNotAllowedError", "MODEL_NOT_ALLOWED"],
 		["ModelDeniedError", "MODEL_DENIED"],
-		["RuntimeCapacityError", "RUNTIME_CAPACITY"],
+		["ModelNotAvailableError", "MODEL_NOT_AVAILABLE"],
 		["OpencodeBinaryNotFoundError", "BINARY_NOT_FOUND"],
 		["RuntimeStartupError", "RUNTIME_STARTUP_FAILED"],
 	] as const)("maps %s -> %s", (name, expected) => {

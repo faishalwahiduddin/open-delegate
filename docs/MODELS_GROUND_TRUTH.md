@@ -112,6 +112,7 @@ Operators who want a hard block can set e.g. `OPEN_DELEGATE_DENY_MODELS=openrout
 ```bash
 opencode models --refresh
 opencode models --verbose   # costs + capabilities
+npm run refresh:models      # diff curated ODE_MODELS + ground-truth pins vs live provider.list()
 ```
 
-Re-check AA leaderboard before treating scores as permanent. Catalog IDs and Zen free mappings can change without a docs bump.
+Re-check AA leaderboard before treating scores as permanent. Catalog IDs and Zen free mappings can change without a docs bump. `refresh:models` reports diffs only — edit `src/data/ode-models.default.json` manually after review.
