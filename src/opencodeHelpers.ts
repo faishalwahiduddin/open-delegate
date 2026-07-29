@@ -58,6 +58,40 @@ export function formatToolCallLine(part: Part): string | undefined {
 	return `  - tool:${name} [${status}]${inSuffix}${outSuffix}`;
 }
 
+/**
+ * Human-readable "what is the subagent doing right now" from the latest
+ * in-progress tool or reasoning part. Scans newest-first. Returns undefined
+ * when nothing is actively in flight (caller may fall back to "thinking").
+ */
+export function describeCurrentActivity(parts: Part[]): string | undefined {
+	for (let i = parts.length - 1; i >= 0; i--) {
+		const part = parts[i]!;
+		if (part.type === "tool") {
+			const toolPart = part as Part & {
+				type: "tool";
+				tool?: string;
+				state?: { status?: string; input?: unknown; title?: string };
+			};
+			const status = toolPart.state?.status;
+			if (status === "running" || status === "pending") {
+				const name = toolPart.tool ?? "unknown";
+				const title = typeof toolPart.state?.title === "string" ? toolPart.state.title.trim() : "";
+				if (title) return `tool:${name} ${truncate(title, TOOL_INPUT_PREVIEW_CHARS)}`;
+				const inputPreview = previewJson(toolPart.state?.input, TOOL_INPUT_PREVIEW_CHARS);
+				return inputPreview ? `tool:${name} ${inputPreview}` : `tool:${name}`;
+			}
+		}
+	}
+	for (let i = parts.length - 1; i >= 0; i--) {
+		const part = parts[i]!;
+		if (part.type === "reasoning") {
+			const reasoning = part as Part & { type: "reasoning"; time?: { end?: number } };
+			if (reasoning.time?.end === undefined) return "thinking";
+		}
+	}
+	return undefined;
+}
+
 function pickStructuredDetail(value: unknown, depth = 0): string | undefined {
 	if (value === undefined || value === null || depth > 3) return undefined;
 	if (typeof value === "string") {
@@ -259,7 +293,11 @@ export async function refreshSessionStatus(
 		}
 
 		// Still generating (or provider retrying) without a terminal error yet.
-		if (inFlight) return entry;
+		if (inFlight) {
+			const activity = describeCurrentActivity(lastMessage.parts) ?? "thinking";
+			deps.registry.setCurrentActivity(entry.id, activity);
+			return deps.registry.get(entry.id) ?? entry;
+		}
 
 		const finalized = deps.registry.finalizeIfRunning(entry.id, "done", undefined, { hasFinalText, answer });
 		if (finalized) deps.runtimeManager.release(entry.runtimeKey);
@@ -267,13 +305,21 @@ export async function refreshSessionStatus(
 	}
 
 	// No assistant reply yet.
-	if (inFlight) return entry;
+	if (inFlight) {
+		const activity = describeCurrentActivity(lastMessage?.parts ?? []) ?? "thinking";
+		deps.registry.setCurrentActivity(entry.id, activity);
+		return deps.registry.get(entry.id) ?? entry;
+	}
 
 	// opencode reports idle/unknown but hasn't produced an assistant reply
 	// yet. Normally still starting - unless it's been stuck this long,
 	// which means it likely failed before ever going "busy" (e.g. an
 	// invalid model/agent id or a provider auth failure).
-	if (now() - entry.updatedAt < STUCK_STARTUP_MS) return entry;
+	if (now() - entry.updatedAt < STUCK_STARTUP_MS) {
+		const activity = describeCurrentActivity(lastMessage?.parts ?? []) ?? "thinking";
+		deps.registry.setCurrentActivity(entry.id, activity);
+		return deps.registry.get(entry.id) ?? entry;
+	}
 
 	const logPath =
 		deps.logger && runtime.pid !== undefined && entry.runtimeKey

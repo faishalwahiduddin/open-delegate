@@ -53,9 +53,13 @@ non-blocking status check (former `ode_status`).
 | `sessionId` | string | yes | From `ode_delegate` |
 | `timeoutMs` | number | no | Clamped to 0–120,000ms; default 30,000ms. `0` = instant check. |
 
-Output: `{ sessionId, status, previewUrl?, errorMessage?, errorCode?, hasFinalText?, answer? }`.
+Output: `{ sessionId, status, previewUrl?, errorMessage?, errorCode?, hasFinalText?, answer?, currentActivity? }`.
 `status` is one of `"starting" | "running" | "done" | "error" | "cancelled"`.
 `"starting"`/`"running"` on return just means the timeout elapsed first — call again.
+
+`currentActivity` is set while the session is still running: a short string like
+`tool:bash {"command":"npm test"}` or `thinking`. Prefer narrating it between polls
+so the user sees live progress in chat. Cleared once the session is terminal.
 
 `answer` is a capped (~4000 char) extract of the final assistant text when available —
 prefer it over a separate `ode_transcript` for single-turn tasks.

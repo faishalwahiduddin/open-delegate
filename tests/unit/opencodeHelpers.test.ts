@@ -6,6 +6,7 @@ import type { Message, OpencodeClient, Part } from "@opencode-ai/sdk";
 import { Logger } from "../../src/log.js";
 import {
 	classifyAssistantError,
+	describeCurrentActivity,
 	extractText,
 	fetchTranscript,
 	findAuthBudgetLogLine,
@@ -90,6 +91,45 @@ describe("formatToolCallLine", () => {
 
 	it("returns undefined for non-tool parts", () => {
 		expect(formatToolCallLine(textPart("hi"))).toBeUndefined();
+	});
+});
+
+describe("describeCurrentActivity", () => {
+	function reasoningPart(ended: boolean): Part {
+		return {
+			type: "reasoning",
+			text: "hmm",
+			time: ended ? { start: 1, end: 2 } : { start: 1 },
+		} as Part;
+	}
+
+	it("prefers the newest running tool", () => {
+		expect(
+			describeCurrentActivity([
+				toolPart("read", "completed", { path: "a" }),
+				toolPart("bash", "running", { command: "npm test" }),
+			]),
+		).toBe('tool:bash {"command":"npm test"}');
+	});
+
+	it("treats pending tools as in-progress", () => {
+		expect(describeCurrentActivity([toolPart("glob", "pending", { pattern: "*.ts" })])).toBe(
+			'tool:glob {"pattern":"*.ts"}',
+		);
+	});
+
+	it("falls back to thinking for an unfinished reasoning part", () => {
+		expect(describeCurrentActivity([reasoningPart(false), textPart("partial")])).toBe("thinking");
+	});
+
+	it("returns undefined when nothing is in flight", () => {
+		expect(
+			describeCurrentActivity([toolPart("read", "completed", { path: "a" }), reasoningPart(true), textPart("done")]),
+		).toBeUndefined();
+	});
+
+	it("returns undefined for an empty parts list", () => {
+		expect(describeCurrentActivity([])).toBeUndefined();
 	});
 });
 
@@ -284,6 +324,7 @@ describe("refreshSessionStatus", () => {
 		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
 		expect(entry.status).toBe("running");
 		expect(entry.hasFinalText).toBeUndefined();
+		expect(entry.currentActivity).toBe("thinking");
 		expect(deps.released).toEqual([]);
 	});
 
@@ -307,17 +348,34 @@ describe("refreshSessionStatus", () => {
 		expect(entry.errorCode).toBe("PROVIDER_AUTH");
 		expect(entry.errorMessage).toMatch(/out of budget/i);
 		expect(entry.hasFinalText).toBe(false);
+		expect(entry.currentActivity).toBeUndefined();
 		expect(deps.released).toEqual(["default"]);
 	});
 
 	it("stays running while busy with a partial assistant reply and no error", async () => {
 		const registry = new SessionRegistry();
 		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
-		const client = fakeClient([userMsg("hi"), assistantMsg([textPart("partial…")])], "busy");
+		const client = fakeClient(
+			[userMsg("hi"), assistantMsg([toolPart("bash", "running", { command: "ls" }), textPart("partial…")])],
+			"busy",
+		);
 		const deps = makeDeps(client, registry);
 
 		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
 		expect(entry.status).toBe("running");
+		expect(entry.currentActivity).toBe('tool:bash {"command":"ls"}');
 		expect(deps.released).toEqual([]);
+	});
+
+	it("clears currentActivity when finalizing a normal text reply", async () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
+		registry.setCurrentActivity("ses1", "thinking");
+		const client = fakeClient([userMsg("hi"), assistantMsg([textPart("PONG")])], undefined);
+		const deps = makeDeps(client, registry);
+
+		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
+		expect(entry.status).toBe("done");
+		expect(entry.currentActivity).toBeUndefined();
 	});
 });
