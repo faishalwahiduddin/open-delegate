@@ -1,8 +1,8 @@
 # open-delegate
 
-Delegate a Cursor task to a real, unattended background [OpenCode](https://opencode.ai) agent — cheaper model, isolated history — through seven small MCP tools.
+Delegate a Cursor task to a real, unattended background [OpenCode](https://opencode.ai) agent — cheaper model, isolated history — through five small MCP tools.
 
-![version](https://img.shields.io/badge/version-0.1.0--alpha-informational?style=flat-square)
+![version](https://img.shields.io/badge/version-0.2.0--alpha-informational?style=flat-square)
 ![npm](https://img.shields.io/badge/npm-@verbalize%2Fopen--delegate-cb3837?style=flat-square)
 ![IDE](https://img.shields.io/badge/IDE-Cursor-000000?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)
@@ -45,7 +45,7 @@ The plugin's `mcp.json` runs:
 }
 ```
 
-After install, Customize → MCP Tools should list `open-delegate` with seven tools: `ode_delegate`, `ode_await`, `ode_status`, `ode_transcript`, `ode_cancel`, `ode_resume`, `ode_diagnostics`.
+After install, Customize → MCP Tools should list `open-delegate` with five tools: `ode_delegate`, `ode_await`, `ode_transcript`, `ode_cancel`, `ode_diagnostics`.
 
 <details>
 <summary>Pin a default model / policy</summary>
@@ -67,6 +67,7 @@ Prefer a first-class cheap default:
 ```
 
 Optional lists (CSV): `OPEN_DELEGATE_ODE_MODELS`, `OPEN_DELEGATE_ALLOW_MODELS`, `OPEN_DELEGATE_DENY_MODELS`.
+For a large custom force list, prefer `OPEN_DELEGATE_ODE_MODELS_FILE` (JSON array or CSV path) over a giant env CSV.
 
 For a full OpenCode config blob (advanced), use `OPEN_DELEGATE_OPENCODE_CONFIG_CONTENT` instead.
 
@@ -83,7 +84,7 @@ Cursor (MCP client)
 @verbalize/open-delegate  (npx → bundled MCP server)
    │  spawns + owns
    ▼
-opencode serve  (1 shared default + up to 3 capped ephemeral overrides)
+opencode serve  (1 shared default runtime)
    │  HTTP via OpenCode's client SDK
    ▼
 model / provider
@@ -91,22 +92,23 @@ model / provider
 
 - Soft rule `rules/open-delegate-routing.mdc`: if the named model is on ODE_MODELS or is `openrouter/…`, use `ode_delegate` + `ode_await` (not native Task).
 - The default `opencode serve` runtime is pre-warmed right after MCP connect, so most `ode_delegate` calls hit an already-warm process.
-- `ode_delegate` returns a stable `sessionId` within a few seconds — `status: "running"` if setup (create session + `promptAsync`) already finished, or `status: "starting"` if it's still finishing in the background (cold spawn / busy runtime); poll either with `ode_status`/`ode_await`.
-- Prompts are capped at ~512KiB inline; use `promptPath` (a file path read server-side) for anything larger.
-- `ode_await` / `ode_status` poll OpenCode's `/session/status` + message list — never the MCP server's own say-so alone.
+- `ode_delegate` returns a stable `sessionId` within a few seconds — `status: "running"` if setup already finished, or `status: "starting"` if it's still finishing in the background; poll with `ode_await` (use `timeoutMs: 0` for a single peek). Optional `waitMs` can finish short tasks in one call. Pass `sessionId` to resume a finished session.
+- Before starting a prompt, models are checked against the live OpenCode `provider.list()` snapshot (fail-fast `MODEL_NOT_AVAILABLE`).
+- Prompts are capped at ~512KiB inline; use `promptPath` for anything larger.
+- `ode_await` polls OpenCode's `/session/status` + message list and returns a capped `answer` when available.
 - If `opencode serve` crashes, every session pinned to it is marked `"error"` immediately (no hang).
 - Closing the MCP connection disposes every spawned `opencode serve` process.
-- Every internal event (spawn, ready, crash, delegate accepted, tool errors, …) is logged as one-line JSON to stderr and to a PID-named file under `OPEN_DELEGATE_LOG_DIR`; `ode_diagnostics` reads it back live — see [skills/ode-delegate/reference/config.md](skills/ode-delegate/reference/config.md#logging).
-- Failures are a stable `{ code, message, hint?, fix? }` JSON envelope, not free-text — see [skills/ode-delegate/reference/errors.md](skills/ode-delegate/reference/errors.md).
+- Every internal event is logged as one-line JSON to stderr and to a PID-named file; `ode_diagnostics` reads it back live — see [skills/ode-delegate/reference/config.md](skills/ode-delegate/reference/config.md#logging).
+- Failures are a stable `{ code, message, hint?, fix? }` JSON envelope — see [skills/ode-delegate/reference/errors.md](skills/ode-delegate/reference/errors.md).
 
 ## Documentation
 
 | Doc | Topic |
 |-----|-------|
-| [skills/ode-delegate/SKILL.md](skills/ode-delegate/SKILL.md) | Agent-facing contract: when/how to use the seven tools |
+| [skills/ode-delegate/SKILL.md](skills/ode-delegate/SKILL.md) | Agent-facing contract: when/how to use the five tools |
 | [skills/ode-delegate/reference/models.md](skills/ode-delegate/reference/models.md) | Cheap force-set pins / job defaults |
 | [skills/ode-delegate/reference/tools.md](skills/ode-delegate/reference/tools.md) | Tool-by-tool input/output |
-| [skills/ode-delegate/reference/config.md](skills/ode-delegate/reference/config.md) | `OPEN_DELEGATE_*` env vars and per-call overrides |
+| [skills/ode-delegate/reference/config.md](skills/ode-delegate/reference/config.md) | `OPEN_DELEGATE_*` env vars |
 | [skills/ode-delegate/reference/errors.md](skills/ode-delegate/reference/errors.md) | Error shapes |
 | [rules/open-delegate-routing.mdc](rules/open-delegate-routing.mdc) | Soft always-on routing (ODE_MODELS / openrouter → ODE) |
 | [docs/MODELS_GROUND_TRUTH.md](docs/MODELS_GROUND_TRUTH.md) | Cost-first catalog research |
@@ -118,18 +120,21 @@ model / provider
 |------|------|
 | `src/binaryResolve.ts` | Finds the `opencode` CLI |
 | `src/modelPolicy.ts` | Default / ODE_MODELS / allow / deny / model-id suggestions |
+| `src/modelAvailability.ts` | Live `provider.list()` snapshot + fail-fast checks |
+| `src/data/ode-models.default.json` | Built-in cheap force-routing catalog |
 | `src/runtime.ts` | One spawned `opencode serve` + connected client |
-| `src/runtimeManager.ts` | Runtime pool, crash/dispose lifecycle |
+| `src/runtimeManager.ts` | Single shared runtime, crash/respawn lifecycle |
 | `src/sessionRegistry.ts` | In-memory session bookkeeping |
 | `src/opencodeHelpers.ts` | Status/transcript polling |
-| `src/log.ts` | Structured event logging (stderr + PID-named files) for the bridge and each opencode runtime |
+| `src/log.ts` | Structured event logging (stderr + PID-named files) |
 | `src/mcpResult.ts` | `ok`/`fail`/`failError` result shaping and the error-code catalog |
-| `src/tools/*.ts` | The seven MCP tools (incl. `ode_diagnostics`) |
+| `src/tools/*.ts` | The five MCP tools |
 | `src/index.ts` | MCP bootstrap + cleanup |
 | `skills/ode-delegate/` | Agent-facing skill |
 | `rules/` | Soft always-on Cursor rules |
 | `.cursor-plugin/`, `mcp.json` | Cursor plugin manifest |
-| `scripts/build.mjs` | esbuild bundle → `dist/index.cjs` |
+| `scripts/build.mjs` | esbuild bundle → `dist/index.cjs` (+ copy `data/`) |
+| `scripts/refresh-models.mjs` | Diff curated catalog vs live OpenCode providers |
 | `scripts/register-local-plugin.mjs` | Dev: register checkout via `workspaceOpen` hook |
 | `scripts/e2e-smoke.mjs` | Real-server smoke test |
 | `scripts/validate-skill.mjs` | Plugin/skill layout checks |
@@ -175,7 +180,7 @@ To publish a new npm release (maintainers): run the full [release gate](RUNBOOK.
 
 ```bash
 npm run build
-# 0.1.0-alpha is a prerelease — npm requires an explicit dist-tag:
+# 0.2.0-alpha is a prerelease — npm requires an explicit dist-tag:
 npm publish --access public --tag alpha
 ```
 

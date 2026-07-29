@@ -57,7 +57,7 @@ export function registerOdeTranscript(server: McpServer, ctx: DelegateContext): 
 					`The opencode server for session "${args.sessionId}" is no longer running, so its transcript can't be fetched. ` +
 						`Last known status: ${entry.status}${entry.errorMessage ? ` (${entry.errorMessage})` : ""}.`,
 					{
-						fix: "Check ode_diagnostics for live runtimes; ode_resume will respawn one if needed.",
+						fix: "Check ode_diagnostics for live runtimes; ode_delegate({ sessionId }) will respawn one if needed.",
 						logger: ctx.logger,
 						tool: TOOL_NAME,
 					},

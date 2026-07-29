@@ -18,9 +18,12 @@ export function registerOdeDiagnostics(server: McpServer, ctx: DelegateContext):
 			inputSchema: diagnosticsInputShape,
 		},
 		async () => {
+			const cached = ctx.modelAvailability.getCached();
 			const runtimes = ctx.runtimeManager.snapshot().map((r) => ({
 				...r,
 				logPath: r.opencodePid !== undefined ? ctx.logger.opencodeLogPath(r.opencodePid, r.key) : undefined,
+				connectedModelCount: cached?.connectedIds.length,
+				connectedProviders: cached ? [...cached.connectedProviders] : undefined,
 			}));
 			return ok({
 				mcpPid: process.pid,
@@ -31,6 +34,11 @@ export function registerOdeDiagnostics(server: McpServer, ctx: DelegateContext):
 				runtimes,
 				sessionCounts: ctx.registry.countsByStatus(),
 				recentEvents: ctx.logger.recentEvents(),
+				modelPolicy: {
+					defaultModel: ctx.modelPolicy.defaultModel,
+					odeModelsCount: ctx.modelPolicy.odeModels.length,
+					allowExplicit: ctx.modelPolicy.allowExplicit,
+				},
 			});
 		},
 	);

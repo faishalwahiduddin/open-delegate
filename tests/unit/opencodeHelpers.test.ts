@@ -189,7 +189,7 @@ describe("fetchTranscript", () => {
 describe("refreshSessionStatus", () => {
 	it("sets hasFinalText true for a normal text reply", async () => {
 		const registry = new SessionRegistry();
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const client = fakeClient([userMsg("hi"), assistantMsg([textPart("PONG")])], undefined);
 		const deps = makeDeps(client, registry);
 
@@ -201,7 +201,7 @@ describe("refreshSessionStatus", () => {
 
 	it("sets hasFinalText false for a tool-only terminal turn", async () => {
 		const registry = new SessionRegistry();
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const client = fakeClient([userMsg("hi"), assistantMsg([toolPart("glob", "completed")])], undefined);
 		const deps = makeDeps(client, registry);
 
@@ -212,7 +212,7 @@ describe("refreshSessionStatus", () => {
 
 	it("sets hasFinalText false when the runtime is gone", async () => {
 		const registry = new SessionRegistry();
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const deps = makeDeps(undefined, registry);
 
 		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
@@ -224,7 +224,7 @@ describe("refreshSessionStatus", () => {
 	it("sets hasFinalText false on stuck startup (no assistant reply)", async () => {
 		const clock = { t: 0, now: () => clock.t };
 		const registry = new SessionRegistry({ now: clock.now });
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		clock.t = 25_000; // past STUCK_STARTUP_MS
 		const client = fakeClient([userMsg("hi")], undefined);
 		const deps = makeDeps(client, registry);
@@ -244,7 +244,7 @@ describe("refreshSessionStatus", () => {
 		writeFileSync(teePath, "boot\nProviderAuthError: api key out of budget\n", "utf8");
 
 		const registry = new SessionRegistry({ now: clock.now });
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		clock.t = 25_000;
 		const client = fakeClient([userMsg("hi")], undefined);
 		const deps = makeDeps(client, registry, [], { pid, logger });
@@ -258,7 +258,7 @@ describe("refreshSessionStatus", () => {
 
 	it("leaves hasFinalText unset when messages cannot be read", async () => {
 		const registry = new SessionRegistry();
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const client = {
 			session: {
 				status: vi.fn(async () => ({ data: {} })),
@@ -277,7 +277,7 @@ describe("refreshSessionStatus", () => {
 
 	it("stays running while session status is busy and there is no assistant error", async () => {
 		const registry = new SessionRegistry();
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const client = fakeClient([userMsg("hi")], "busy");
 		const deps = makeDeps(client, registry);
 
@@ -289,7 +289,7 @@ describe("refreshSessionStatus", () => {
 
 	it("finalizes PROVIDER_AUTH while status is still retry when assistant.error is set", async () => {
 		const registry = new SessionRegistry();
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const client = fakeClient(
 			[
 				userMsg("hi"),
@@ -312,7 +312,7 @@ describe("refreshSessionStatus", () => {
 
 	it("stays running while busy with a partial assistant reply and no error", async () => {
 		const registry = new SessionRegistry();
-		registry.create({ id: "ses1", runtimeKey: "default", config: undefined, previewUrl: "u" });
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const client = fakeClient([userMsg("hi"), assistantMsg([textPart("partial…")])], "busy");
 		const deps = makeDeps(client, registry);
 

@@ -6,31 +6,27 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { DelegateContext } from "../context.js";
 import { codeForError, describeError, failError, ok } from "../mcpResult.js";
+import {
+	checkModelAvailable,
+	ModelNotAvailableError,
+} from "../modelAvailability.js";
 import { formatPolicyForToolDescription, resolveDelegateModel, suggestModels } from "../modelPolicy.js";
 import type { ModelSpec } from "../modelSpec.js";
+import { awaitSession, sessionResultPayload } from "./await.js";
 
 const TOOL_NAME = "ode_delegate";
 const MAX_PROMPT_BYTES = 512 * 1024;
 const DEFAULT_SETUP_TIMEOUT_MS = 25_000;
-/** How long the handler itself waits before returning "starting" instead of the actual outcome. Keeps warm-path calls fast without ever risking Cursor's own tool-call timeout on a cold spawn. */
+/** How long the handler itself waits before returning "starting" instead of the actual outcome. */
 const RETURN_GRACE_MS = 2_500;
-
-const configShape = z
-	.object({
-		path: z.string().optional().describe("Path to a custom opencode.json/.jsonc file for this call only."),
-		content: z.string().optional().describe("Inline JSON opencode config for this call only."),
-	})
-	.describe(
-		"One-off opencode config override. Spawns a separate, capped, ephemeral opencode server " +
-			"instead of using the shared default one; omit unless this call truly needs different config.",
-	);
+const MAX_WAIT_MS = 60_000;
 
 export const delegateInputShape = {
 	prompt: z
 		.string()
 		.optional()
 		.describe(
-			`The task/instructions to hand off (inline). Mutually exclusive with promptPath; one is required. Hard cap ~${MAX_PROMPT_BYTES / 1024}KiB — use promptPath for anything larger.`,
+			`The task/instructions to hand off (inline). Mutually exclusive with promptPath; one is required. Hard cap ~${MAX_PROMPT_BYTES / 1024}KiB — use promptPath for anything larger. When sessionId is set, this is the follow-up prompt.`,
 		),
 	promptPath: z
 		.string()
@@ -38,16 +34,28 @@ export const delegateInputShape = {
 		.describe(
 			`Absolute path to a UTF-8 text file containing the prompt, for anything too large to inline safely (~${MAX_PROMPT_BYTES / 1024}KiB cap applies to the file too). Mutually exclusive with prompt.`,
 		),
+	sessionId: z
+		.string()
+		.optional()
+		.describe(
+			"Resume an existing terminal session with a follow-up prompt instead of creating a new one. Session must not be running/starting.",
+		),
 	model: z
 		.string()
 		.optional()
 		.describe(
-			'Model as "provider/model", e.g. "opencode/deepseek-v4-flash-free". Omit to use OPEN_DELEGATE_DEFAULT_MODEL or the OpenCode server default.',
+			'Model as "provider/model", e.g. "opencode/deepseek-v4-flash-free". Omit to use OPEN_DELEGATE_DEFAULT_MODEL or the OpenCode server default. Ignored when resuming via sessionId.',
 		),
-	agent: z.string().optional().describe("OpenCode agent/mode name to run as. Omit for opencode's own default."),
+	agent: z.string().optional().describe("OpenCode agent/mode name to run as. Omit for opencode's own default. Ignored when resuming."),
 	cwd: z.string().optional().describe("Working directory for the delegated session. Omit to use the server's own cwd."),
-	title: z.string().optional().describe("Optional short title for the session (shown in opencode's own session list)."),
-	config: configShape.optional(),
+	title: z.string().optional().describe("Optional short title for the session (shown in opencode's own session list). Ignored when resuming."),
+	waitMs: z
+		.number()
+		.int()
+		.optional()
+		.describe(
+			`After setup succeeds, block up to this many ms for the session to finish (clamped 0-${MAX_WAIT_MS}). Omitting skips the wait (same as waitMs: 0). Useful for short tasks that can finish in one tool call.`,
+		),
 };
 
 const delegateInputSchema = z.object(delegateInputShape);
@@ -63,6 +71,11 @@ function sleep(ms: number): Promise<void> {
 function setupTimeoutMs(): number {
 	const raw = Number(process.env.OPEN_DELEGATE_SETUP_TIMEOUT_MS);
 	return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SETUP_TIMEOUT_MS;
+}
+
+function clampWaitMs(raw: number | undefined): number {
+	if (raw === undefined) return 0;
+	return Math.min(MAX_WAIT_MS, Math.max(0, raw));
 }
 
 type PromptResolution = { ok: true; text: string } | { ok: false; result: CallToolResult };
@@ -145,23 +158,34 @@ interface SetupParams {
 }
 
 /**
- * Runs the actual acquire -> create session -> promptAsync chain in the
- * background so ode_delegate's own handler never has to block on a cold
- * `opencode serve` spawn. Never throws - every failure path finalizes the
- * registry entry itself so pollers (ode_status/ode_await) always see a
- * terminal outcome instead of a permanently "starting" session.
+ * Runs the actual acquire -> (model check) -> create session -> promptAsync chain
+ * in the background. Never throws - every failure path finalizes the registry entry.
  */
 async function runDelegateSetup(ctx: DelegateContext, params: SetupParams): Promise<void> {
 	const { sessionId, args, modelSpec, promptText } = params;
 
 	let acquired: Awaited<ReturnType<DelegateContext["runtimeManager"]["acquire"]>>;
 	try {
-		acquired = await ctx.runtimeManager.acquire(args.config);
+		acquired = await ctx.runtimeManager.acquire();
 	} catch (err) {
 		ctx.registry.failStarting(sessionId, describeError(err), codeForError(err));
 		return;
 	}
 	const { key, runtime } = acquired;
+
+	// Fail-fast on unknown / unauthenticated models before creating a session.
+	if (modelSpec) {
+		const snapshot = await ctx.modelAvailability.tryGetSnapshot(runtime.client);
+		if (snapshot) {
+			const check = checkModelAvailable(modelSpec, snapshot);
+			if (!check.ok) {
+				ctx.runtimeManager.release(key);
+				const err = new ModelNotAvailableError(`${modelSpec.providerID}/${modelSpec.modelID}`, check.reason);
+				ctx.registry.failStarting(sessionId, err.message, "MODEL_NOT_AVAILABLE");
+				return;
+			}
+		}
+	}
 
 	let opencodeSessionId: string;
 	try {
@@ -199,8 +223,6 @@ async function runDelegateSetup(ctx: DelegateContext, params: SetupParams): Prom
 
 	const attached = ctx.registry.attachRuntime(sessionId, { runtimeKey: key, opencodeSessionId, previewUrl: runtime.url });
 	if (!attached) {
-		// Cancelled (ode_cancel) or otherwise resolved while we were still setting up - don't leave
-		// an orphaned session running server-side just because nobody's tracking it anymore.
 		try {
 			await runtime.client.session.abort({ path: { id: opencodeSessionId }, throwOnError: true });
 		} catch {
@@ -211,7 +233,6 @@ async function runDelegateSetup(ctx: DelegateContext, params: SetupParams): Prom
 	}
 }
 
-/** Wraps runDelegateSetup with an independent watchdog that fires even after the tool call itself has already returned "starting". */
 function runDelegateSetupWithDeadline(ctx: DelegateContext, params: SetupParams): Promise<void> {
 	const timer = setTimeout(() => {
 		const failed = ctx.registry.failStarting(
@@ -225,10 +246,99 @@ function runDelegateSetupWithDeadline(ctx: DelegateContext, params: SetupParams)
 	return runDelegateSetup(ctx, params).finally(() => clearTimeout(timer));
 }
 
+async function resumeExistingSession(
+	ctx: DelegateContext,
+	args: DelegateInput,
+	promptText: string,
+): Promise<CallToolResult> {
+	const sessionId = args.sessionId as string;
+	const entry = ctx.registry.get(sessionId);
+	if (!entry) {
+		return failError("SESSION_NOT_FOUND", `Unknown sessionId "${sessionId}". It may have already been pruned, or was never created by ode_delegate.`, {
+			fix: "Double-check the sessionId from ode_delegate's response, or re-delegate if it was pruned (>30min past finishing).",
+			logger: ctx.logger,
+			tool: TOOL_NAME,
+		});
+	}
+	if (entry.status === "running" || entry.status === "starting") {
+		return failError("SESSION_NOT_TERMINAL", `Session "${sessionId}" is still ${entry.status}.`, {
+			fix: `Call ode_await first, then resume (ode_delegate with sessionId) once status is no longer "${entry.status}".`,
+			logger: ctx.logger,
+			tool: TOOL_NAME,
+		});
+	}
+
+	let acquired: Awaited<ReturnType<DelegateContext["runtimeManager"]["acquire"]>>;
+	try {
+		acquired = await ctx.runtimeManager.acquire();
+	} catch (err) {
+		return failError(codeForError(err), describeError(err), {
+			logger: ctx.logger,
+			tool: TOOL_NAME,
+		});
+	}
+	const { key, runtime } = acquired;
+
+	try {
+		await runtime.client.session.promptAsync({
+			path: { id: entry.opencodeSessionId ?? entry.id },
+			body: { parts: [{ type: "text", text: promptText }] },
+			throwOnError: true,
+		});
+	} catch (err) {
+		ctx.runtimeManager.release(key);
+		return failError("SESSION_RESUME_FAILED", `Failed to resume session "${sessionId}": ${describeError(err)}`, {
+			hint: "If its opencode server had been disposed and was just respawned, that fresh server may no longer have this session's history.",
+			logger: ctx.logger,
+			tool: TOOL_NAME,
+		});
+	}
+
+	entry.runtimeKey = key;
+	ctx.registry.setStatus(entry.id, "running");
+
+	const waitMs = clampWaitMs(args.waitMs);
+	if (waitMs > 0) {
+		const current = await awaitSession(ctx, entry.id, waitMs);
+		return ok({
+			...sessionResultPayload(current),
+			previewUrl: current.previewUrl ?? runtime.url,
+			note: ctx.registry.isTerminal(current.status)
+				? undefined
+				: "Still running after waitMs — call ode_await with this sessionId to continue.",
+		});
+	}
+
+	return ok({
+		sessionId: entry.id,
+		status: "running",
+		previewUrl: runtime.url,
+		note: "Use ode_await (blocking, with timeout; timeoutMs: 0 for a single check) with this sessionId next.",
+	});
+}
+
+async function maybeWaitAndReturn(
+	ctx: DelegateContext,
+	sessionId: string,
+	waitMs: number,
+	base: Record<string, unknown>,
+): Promise<CallToolResult> {
+	if (waitMs <= 0) return ok(base);
+	const current = await awaitSession(ctx, sessionId, waitMs);
+	return ok({
+		...sessionResultPayload(current),
+		runtimeKey: base.runtimeKey,
+		opencodePid: base.opencodePid,
+		note: ctx.registry.isTerminal(current.status)
+			? undefined
+			: "Still running after waitMs — call ode_await with this sessionId to continue.",
+	});
+}
+
 export interface RegisterOdeDelegateOptions {
-	/** How long the handler waits before returning "starting" instead of the actual outcome. Test seam; production always uses the default. */
+	/** How long the handler waits before returning "starting" instead of the actual outcome. Test seam. */
 	returnGraceMs?: number;
-	/** Overrides OPEN_DELEGATE_SETUP_TIMEOUT_MS. Test seam; production always reads the env var. */
+	/** Overrides OPEN_DELEGATE_SETUP_TIMEOUT_MS. Test seam. */
 	setupTimeoutMs?: number;
 }
 
@@ -243,20 +353,32 @@ export function registerOdeDelegate(server: McpServer, ctx: DelegateContext, opt
 			description:
 				"Starts a new OpenCode agent session to work on `prompt` (or `promptPath`) in the background and " +
 				'returns a sessionId - typically with status "running" once the underlying opencode server is warm, or ' +
-				'"starting" if it just had to cold-spawn (never blocks past a few seconds either way). Follow up with ' +
-				"ode_await (block until done or timeout) or ode_status (single non-blocking check).\n\n" +
+				'"starting" if it just had to cold-spawn (never blocks past a few seconds either way, unless waitMs is set). ' +
+				"Pass sessionId to resume a finished session with a follow-up prompt. " +
+				"Follow up with ode_await (block until done or timeout; timeoutMs: 0 = single check).\n\n" +
 				policyNote,
 			inputSchema: delegateInputShape,
 		},
 		async (args: DelegateInput) => {
+			const promptResolution = await resolvePromptText(args, ctx);
+			if (!promptResolution.ok) return promptResolution.result;
+
+			// Resume path: existing sessionId + follow-up prompt.
+			if (typeof args.sessionId === "string" && args.sessionId.length > 0) {
+				return resumeExistingSession(ctx, args, promptResolution.text);
+			}
+
 			let modelSpec: ModelSpec | undefined;
+			let liveConnectedIds: string[] | undefined;
 			try {
 				modelSpec = resolveDelegateModel(args.model, ctx.modelPolicy);
 			} catch (err) {
 				const code = codeForError(err);
+				const cached = ctx.modelAvailability.getCached();
+				liveConnectedIds = cached?.connectedIds;
 				const hint =
 					code === "INVALID_MODEL" || code === "MODEL_NOT_ALLOWED"
-						? `Known-good pins: ${suggestModels(args.model, ctx.modelPolicy).join(", ")}`
+						? `Known-good pins: ${suggestModels(args.model, ctx.modelPolicy, 5, liveConnectedIds).join(", ")}`
 						: undefined;
 				return failError(code, describeError(err), {
 					hint,
@@ -267,11 +389,8 @@ export function registerOdeDelegate(server: McpServer, ctx: DelegateContext, opt
 				});
 			}
 
-			const promptResolution = await resolvePromptText(args, ctx);
-			if (!promptResolution.ok) return promptResolution.result;
-
 			const sessionId = randomUUID();
-			ctx.registry.createPending({ id: sessionId, config: args.config });
+			ctx.registry.createPending({ id: sessionId });
 
 			const setupPromise = runDelegateSetupWithDeadline(ctx, {
 				sessionId,
@@ -281,15 +400,12 @@ export function registerOdeDelegate(server: McpServer, ctx: DelegateContext, opt
 				setupTimeoutMs: setupDeadlineMs,
 			});
 			setupPromise.catch((err) => {
-				// runDelegateSetup already finalizes the registry on every expected failure; this only
-				// fires for a genuine bug in the setup chain itself, which we still must not let crash the MCP process.
 				ctx.logger.error("delegate_setup_unexpected_error", { sessionId, message: describeError(err) });
 			});
 
 			await Promise.race([setupPromise, sleep(returnGraceMs)]);
 			const entry = ctx.registry.get(sessionId);
 			if (!entry) {
-				// Only reachable if pruning raced us within RETURN_GRACE_MS of creation - practically never (30min default prune window).
 				return failError("UNKNOWN", "Session vanished immediately after being created.", { details: { sessionId }, logger: ctx.logger, tool: TOOL_NAME });
 			}
 
@@ -297,12 +413,19 @@ export function registerOdeDelegate(server: McpServer, ctx: DelegateContext, opt
 				return ok({
 					sessionId,
 					status: "starting",
-					note: "Still starting (cold opencode spawn, or a busy runtime) - call ode_status or ode_await with this sessionId to continue.",
+					note: "Still starting (cold opencode spawn, or a busy runtime) - call ode_await with this sessionId to continue.",
 				});
 			}
 
 			if (entry.status === "error") {
-				return failError(entry.errorCode ?? "UNKNOWN", entry.errorMessage ?? "Delegated session failed during setup.", {
+				const code = entry.errorCode ?? "UNKNOWN";
+				const cached = ctx.modelAvailability.getCached();
+				const hint =
+					code === "MODEL_NOT_AVAILABLE"
+						? `Known-good pins: ${suggestModels(args.model, ctx.modelPolicy, 5, cached?.connectedIds).join(", ")}`
+						: undefined;
+				return failError(code, entry.errorMessage ?? "Delegated session failed during setup.", {
+					hint,
 					details: { sessionId },
 					logger: ctx.logger,
 					tool: TOOL_NAME,
@@ -310,13 +433,14 @@ export function registerOdeDelegate(server: McpServer, ctx: DelegateContext, opt
 			}
 
 			const runtime = ctx.runtimeManager.getRuntime(entry.runtimeKey);
-			return ok({
+			const waitMs = clampWaitMs(args.waitMs);
+			return maybeWaitAndReturn(ctx, sessionId, waitMs, {
 				sessionId,
 				status: "running",
 				previewUrl: entry.previewUrl,
 				runtimeKey: entry.runtimeKey,
 				opencodePid: runtime?.pid,
-				note: "Use ode_await (blocking, with timeout) or ode_status (single check) with this sessionId next.",
+				note: "Use ode_await (blocking, with timeout; timeoutMs: 0 for a single check) with this sessionId next.",
 			});
 		},
 	);

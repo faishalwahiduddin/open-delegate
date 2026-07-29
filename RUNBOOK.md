@@ -16,7 +16,7 @@ for the full explanation; the short version:
 1. **Reload the window** — Command Palette → `Developer: Reload Window`. This
    restarts the MCP connection cleanly. Any in-flight delegated session keeps
    running server-side (it's a separate `opencode serve` process) and can still be
-   reached with `ode_status`/`ode_await`/`ode_transcript` afterward, as long as that
+   reached with `ode_await`/`ode_transcript` afterward, as long as that
    `opencode serve` process itself survived.
 2. **Check whether it's still your fault** — before Reload, if the connection is
    still up, run `ode_diagnostics`. It reports the bridge's own pid, every live
@@ -57,10 +57,10 @@ connects, so most calls hit an already-warm process. If a call still returns
 - This is expected on a genuinely cold spawn (first-ever call in a fresh window
   racing pre-warm, or opencode itself being slow to boot) — it is **not** a hang.
   `ode_delegate` never blocks past a couple of seconds either way.
-- Poll with `ode_status`/`ode_await` using the same `sessionId` — it flips to
+- Poll with `ode_await` using the same `sessionId` — it flips to
   `"running"` once background setup (acquire → create session → start prompt)
   finishes, or `"error"` if it hits the soft setup deadline
-  (`OPEN_DELEGATE_SETUP_TIMEOUT_MS`, default 25s).
+  (`OPEN_DELEGATE_SETUP_TIMEOUT_MS`, default 25s). Use `timeoutMs: 0` for a single peek.
 - If it's *always* slow on a warm bridge, check `ode_diagnostics` → `runtimes` for a
   `"default"` entry — if it's absent entirely, pre-warm itself failed (logged as
   `runtime_startup_failed` on connect); check the `opencode` CLI installation

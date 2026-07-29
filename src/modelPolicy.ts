@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { InvalidModelSpecError, type ModelSpec, parseModelSpec } from "./modelSpec.js";
 
-/** Built-in cheap-first force-routing catalog (conceptual ODE_MODELS). */
-export const BUILTIN_ODE_MODELS: readonly string[] = [
+/** Hardcoded fallback if the data file can't be read (tests / broken install). */
+const FALLBACK_ODE_MODELS: readonly string[] = [
 	"opencode/deepseek-v4-flash-free",
 	"opencode/nemotron-3-ultra-free",
 	"opencode/mimo-v2.5-free",
@@ -16,6 +18,22 @@ export const BUILTIN_ODE_MODELS: readonly string[] = [
 	"openrouter/google/gemini-3.6-flash",
 	"openrouter/x-ai/grok-4.5",
 ];
+
+/** Built-in cheap-first force-routing catalog (conceptual ODE_MODELS), loaded from data file. */
+export const BUILTIN_ODE_MODELS: readonly string[] = loadBuiltinOdeModels();
+
+function loadBuiltinOdeModels(): readonly string[] {
+	try {
+		const url = new URL("./data/ode-models.default.json", import.meta.url);
+		const raw = JSON.parse(readFileSync(url, "utf8")) as unknown;
+		if (Array.isArray(raw) && raw.every((x) => typeof x === "string") && raw.length > 0) {
+			return raw as string[];
+		}
+	} catch {
+		// fall through
+	}
+	return FALLBACK_ODE_MODELS;
+}
 
 /** Implicit allow universe when OPEN_DELEGATE_ALLOW_MODELS is unset. */
 const DEFAULT_ALLOW_PREFIXES = ["openrouter/*", "opencode/*"] as const;
@@ -74,12 +92,47 @@ export function matchesList(id: string, list: readonly string[]): boolean {
 	return list.some((entry) => matchesEntry(id, entry));
 }
 
+function loadOdeModelsFromFile(filePath: string): string[] {
+	const absolute = resolve(filePath);
+	const text = readFileSync(absolute, "utf8").trim();
+	if (text.startsWith("[")) {
+		const parsed = JSON.parse(text) as unknown;
+		if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) {
+			throw new Error(`OPEN_DELEGATE_ODE_MODELS_FILE "${absolute}" must be a JSON array of strings.`);
+		}
+		return (parsed as string[]).map((s) => s.trim()).filter((s) => s.length > 0);
+	}
+	return parseModelList(text);
+}
+
+/**
+ * Resolve the ODE_MODELS force catalog.
+ * Precedence: OPEN_DELEGATE_ODE_MODELS (inline CSV) > OPEN_DELEGATE_ODE_MODELS_FILE > built-in default.
+ * Empty OPEN_DELEGATE_ODE_MODELS string → none (explicit clear).
+ */
+export function resolveOdeModels(env: Record<string, string | undefined> = process.env): string[] {
+	const odeEnv = env.OPEN_DELEGATE_ODE_MODELS;
+	if (odeEnv !== undefined) return parseModelList(odeEnv);
+
+	const filePath = env.OPEN_DELEGATE_ODE_MODELS_FILE?.trim();
+	if (filePath) {
+		try {
+			return loadOdeModelsFromFile(filePath);
+		} catch (err) {
+			throw new Error(
+				`Failed to read OPEN_DELEGATE_ODE_MODELS_FILE "${filePath}": ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	return [...BUILTIN_ODE_MODELS];
+}
+
 export function loadModelPolicy(env: Record<string, string | undefined> = process.env): ModelPolicy {
 	const defaultRaw = env.OPEN_DELEGATE_DEFAULT_MODEL?.trim();
 	const defaultModel = defaultRaw && defaultRaw.length > 0 ? defaultRaw : undefined;
 
-	const odeEnv = env.OPEN_DELEGATE_ODE_MODELS;
-	const odeModels = odeEnv === undefined ? [...BUILTIN_ODE_MODELS] : parseModelList(odeEnv);
+	const odeModels = resolveOdeModels(env);
 
 	const allowEnv = env.OPEN_DELEGATE_ALLOW_MODELS;
 	const allowExplicit = allowEnv !== undefined;
@@ -132,9 +185,21 @@ function similarityScore(needle: string, hay: string): number {
  * Short, ranked list of known-good model ids to surface as an error `hint`
  * when a caller's model was invalid/disallowed — e.g. a typo like
  * "deepseek-v4-pro" should surface "openrouter/deepseek/deepseek-v4-pro" first.
+ *
+ * When `liveConnectedIds` is provided (from a runtime provider snapshot), those
+ * ids are blended into the pool so suggestions reflect what's actually usable now.
  */
-export function suggestModels(rawOrId: string | undefined, policy: ModelPolicy, max = 5): string[] {
-	const pool = policy.odeModels.length > 0 ? policy.odeModels : [...BUILTIN_ODE_MODELS];
+export function suggestModels(
+	rawOrId: string | undefined,
+	policy: ModelPolicy,
+	max = 5,
+	liveConnectedIds?: readonly string[],
+): string[] {
+	const curated = policy.odeModels.length > 0 ? policy.odeModels : [...BUILTIN_ODE_MODELS];
+	const pool =
+		liveConnectedIds && liveConnectedIds.length > 0
+			? [...new Set([...curated.filter((id) => liveConnectedIds.includes(id)), ...liveConnectedIds, ...curated])]
+			: curated;
 	if (!rawOrId) return pool.slice(0, max);
 	const needle = rawOrId.trim().toLowerCase();
 	const scored = pool.map((id) => ({ id, score: similarityScore(needle, id.toLowerCase()) })).sort((a, b) => b.score - a.score);

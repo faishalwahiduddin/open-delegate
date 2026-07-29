@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { DelegateContext } from "../../src/context.js";
 import { Logger } from "../../src/log.js";
+import { ModelAvailabilityCache } from "../../src/modelAvailability.js";
 import { loadModelPolicy } from "../../src/modelPolicy.js";
 import { RuntimeManager } from "../../src/runtimeManager.js";
 import { SessionRegistry } from "../../src/sessionRegistry.js";
@@ -13,8 +14,6 @@ import { registerOdeAwait } from "../../src/tools/await.js";
 import { registerOdeCancel } from "../../src/tools/cancel.js";
 import { registerOdeDelegate } from "../../src/tools/delegate.js";
 import { registerOdeDiagnostics } from "../../src/tools/diagnostics.js";
-import { registerOdeResume } from "../../src/tools/resume.js";
-import { registerOdeStatus } from "../../src/tools/status.js";
 import { registerOdeTranscript } from "../../src/tools/transcript.js";
 
 type Handler = (args: Record<string, unknown>) => Promise<CallToolResult>;
@@ -42,6 +41,7 @@ beforeEach(() => {
 		runtimeManager: new RuntimeManager(),
 		registry: new SessionRegistry(),
 		modelPolicy: loadModelPolicy({}),
+		modelAvailability: new ModelAvailabilityCache(),
 		logger: new Logger({ logDir: dir, write: () => {} }),
 		version: "0.0.0-test",
 	};
@@ -53,11 +53,9 @@ afterEach(() => {
 
 describe("unknown sessionId -> SESSION_NOT_FOUND envelope", () => {
 	const cases: Array<[string, (server: McpServer, ctx: DelegateContext) => void, Record<string, unknown>]> = [
-		["ode_status", registerOdeStatus, { sessionId: "nope" }],
-		["ode_await", registerOdeAwait, { sessionId: "nope", timeoutMs: 1000 }],
+		["ode_await", registerOdeAwait, { sessionId: "nope", timeoutMs: 0 }],
 		["ode_cancel", registerOdeCancel, { sessionId: "nope" }],
 		["ode_transcript", registerOdeTranscript, { sessionId: "nope" }],
-		["ode_resume", registerOdeResume, { sessionId: "nope", prompt: "hi" }],
 	];
 
 	for (const [name, register, args] of cases) {
@@ -73,13 +71,13 @@ describe("unknown sessionId -> SESSION_NOT_FOUND envelope", () => {
 	}
 });
 
-describe("ode_resume", () => {
+describe("ode_delegate resume via sessionId", () => {
 	it("returns SESSION_NOT_TERMINAL when the session is still running", async () => {
-		ctx.registry.create({ id: "s1", runtimeKey: "default", config: undefined, previewUrl: "http://x" });
+		ctx.registry.create({ id: "s1", runtimeKey: "default", previewUrl: "http://x" });
 		const { server, handlers } = fakeServer();
-		registerOdeResume(server, ctx);
+		registerOdeDelegate(server, ctx);
 
-		const result = await handlers.get("ode_resume")!({ sessionId: "s1", prompt: "follow up" });
+		const result = await handlers.get("ode_delegate")!({ sessionId: "s1", prompt: "follow up" });
 
 		expect(result.isError).toBe(true);
 		expect(parse(result)).toMatchObject({ code: "SESSION_NOT_TERMINAL" });
@@ -90,8 +88,8 @@ describe("ode_delegate", () => {
 	it("rejects a malformed model before ever touching the runtime manager", async () => {
 		const acquireCalls: unknown[] = [];
 		ctx.runtimeManager = {
-			acquire: async (config?: unknown) => {
-				acquireCalls.push(config);
+			acquire: async () => {
+				acquireCalls.push(true);
 				throw new Error("should not be called");
 			},
 		} as unknown as RuntimeManager;
@@ -120,7 +118,7 @@ describe("ode_delegate", () => {
 
 describe("ode_await", () => {
 	it('returns status "running" once timeoutMs elapses without the session reaching a terminal state', async () => {
-		ctx.registry.create({ id: "s1", runtimeKey: "default", config: undefined, previewUrl: "http://x" });
+		ctx.registry.create({ id: "s1", runtimeKey: "default", previewUrl: "http://x" });
 		const busyClient = {
 			session: {
 				status: async () => ({ data: { s1: { type: "busy" } } }),
@@ -140,6 +138,26 @@ describe("ode_await", () => {
 		expect(result.isError).toBeFalsy();
 		expect(parse(result)).toMatchObject({ sessionId: "s1", status: "running" });
 	});
+
+	it("timeoutMs: 0 does a single non-blocking check", async () => {
+		ctx.registry.create({ id: "s1", runtimeKey: "default", previewUrl: "http://x" });
+		const busyClient = {
+			session: {
+				status: async () => ({ data: { s1: { type: "busy" } } }),
+				messages: async () => ({ data: [] }),
+			},
+		};
+		ctx.runtimeManager = {
+			getRuntime: () => ({ client: busyClient, state: "ready", url: "http://x" }),
+			release: () => {},
+		} as unknown as RuntimeManager;
+
+		const { server, handlers } = fakeServer();
+		registerOdeAwait(server, ctx);
+
+		const result = await handlers.get("ode_await")!({ sessionId: "s1", timeoutMs: 0 });
+		expect(parse(result)).toMatchObject({ sessionId: "s1", status: "running" });
+	});
 });
 
 describe("ode_diagnostics", () => {
@@ -156,5 +174,24 @@ describe("ode_diagnostics", () => {
 		expect(snapshot.runtimes).toEqual([]);
 		expect(snapshot.sessionCounts).toEqual({ starting: 0, running: 0, done: 0, error: 0, cancelled: 0 });
 		expect(Array.isArray(snapshot.recentEvents)).toBe(true);
+	});
+});
+
+describe("OPEN_DELEGATE_ODE_MODELS_FILE", () => {
+	it("loads ode models from a JSON file when the CSV env is unset", () => {
+		const file = join(dir, "models.json");
+		writeFileSync(file, JSON.stringify(["opencode/from-file"]));
+		const policy = loadModelPolicy({ OPEN_DELEGATE_ODE_MODELS_FILE: file });
+		expect(policy.odeModels).toEqual(["opencode/from-file"]);
+	});
+
+	it("prefers inline CSV over the file", () => {
+		const file = join(dir, "models.json");
+		writeFileSync(file, JSON.stringify(["opencode/from-file"]));
+		const policy = loadModelPolicy({
+			OPEN_DELEGATE_ODE_MODELS: "opencode/from-csv",
+			OPEN_DELEGATE_ODE_MODELS_FILE: file,
+		});
+		expect(policy.odeModels).toEqual(["opencode/from-csv"]);
 	});
 });

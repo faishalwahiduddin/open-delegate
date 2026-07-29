@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Validates the open-delegate plugin layout, the ode-delegate skill's
- * frontmatter/DoD/size budget, that it actually documents all six real MCP
+ * frontmatter/DoD/size budget, that it actually documents all five real MCP
  * tools, and that every relative markdown link inside it resolves.
  *
  * Exit 0 = green. Exit 1 = errors printed to stderr.
@@ -15,7 +15,7 @@ const errors = [];
 const warnings = [];
 
 const MAX_SKILL_LINES = 150;
-const REQUIRED_TOOLS = ["ode_delegate", "ode_await", "ode_status", "ode_transcript", "ode_cancel", "ode_resume"];
+const REQUIRED_TOOLS = ["ode_delegate", "ode_await", "ode_transcript", "ode_cancel", "ode_diagnostics"];
 
 function read(p) {
 	return readFileSync(p, "utf8");
