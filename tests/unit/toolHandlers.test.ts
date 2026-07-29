@@ -16,7 +16,7 @@ import { registerOdeDelegate } from "../../src/tools/delegate.js";
 import { registerOdeDiagnostics } from "../../src/tools/diagnostics.js";
 import { registerOdeTranscript } from "../../src/tools/transcript.js";
 
-type Handler = (args: Record<string, unknown>) => Promise<CallToolResult>;
+type Handler = (args: Record<string, unknown>, extra?: Record<string, unknown>) => Promise<CallToolResult>;
 
 function fakeServer(): { server: McpServer; handlers: Map<string, Handler> } {
 	const handlers = new Map<string, Handler>();
@@ -136,10 +136,41 @@ describe("ode_await", () => {
 		const result = await handlers.get("ode_await")!({ sessionId: "s1", timeoutMs: 1000 });
 
 		expect(result.isError).toBeFalsy();
-		expect(parse(result)).toMatchObject({ sessionId: "s1", status: "running" });
+		expect(parse(result)).toMatchObject({ sessionId: "s1", status: "running", currentActivity: "thinking" });
 	});
 
 	it("timeoutMs: 0 does a single non-blocking check", async () => {
+		ctx.registry.create({ id: "s1", runtimeKey: "default", previewUrl: "http://x" });
+		const busyClient = {
+			session: {
+				status: async () => ({ data: { s1: { type: "busy" } } }),
+				messages: async () => ({
+					data: [
+						{
+							info: { role: "assistant" },
+							parts: [{ type: "tool", tool: "bash", state: { status: "running", input: { command: "ls" } } }],
+						},
+					],
+				}),
+			},
+		};
+		ctx.runtimeManager = {
+			getRuntime: () => ({ client: busyClient, state: "ready", url: "http://x" }),
+			release: () => {},
+		} as unknown as RuntimeManager;
+
+		const { server, handlers } = fakeServer();
+		registerOdeAwait(server, ctx);
+
+		const result = await handlers.get("ode_await")!({ sessionId: "s1", timeoutMs: 0 });
+		expect(parse(result)).toMatchObject({
+			sessionId: "s1",
+			status: "running",
+			currentActivity: 'tool:bash {"command":"ls"}',
+		});
+	});
+
+	it("emits notifications/progress when progressToken is provided", async () => {
 		ctx.registry.create({ id: "s1", runtimeKey: "default", previewUrl: "http://x" });
 		const busyClient = {
 			session: {
@@ -152,11 +183,58 @@ describe("ode_await", () => {
 			release: () => {},
 		} as unknown as RuntimeManager;
 
+		const notifications: unknown[] = [];
 		const { server, handlers } = fakeServer();
 		registerOdeAwait(server, ctx);
 
-		const result = await handlers.get("ode_await")!({ sessionId: "s1", timeoutMs: 0 });
-		expect(parse(result)).toMatchObject({ sessionId: "s1", status: "running" });
+		const result = await handlers.get("ode_await")!(
+			{ sessionId: "s1", timeoutMs: 0 },
+			{
+				_meta: { progressToken: "tok-1" },
+				sendNotification: async (n: unknown) => {
+					notifications.push(n);
+				},
+			},
+		);
+
+		expect(parse(result)).toMatchObject({ status: "running", currentActivity: "thinking" });
+		expect(notifications.length).toBeGreaterThanOrEqual(1);
+		expect(notifications[0]).toMatchObject({
+			method: "notifications/progress",
+			params: {
+				progressToken: "tok-1",
+				message: "thinking",
+			},
+		});
+	});
+
+	it("does not emit progress notifications when progressToken is absent", async () => {
+		ctx.registry.create({ id: "s1", runtimeKey: "default", previewUrl: "http://x" });
+		const busyClient = {
+			session: {
+				status: async () => ({ data: { s1: { type: "busy" } } }),
+				messages: async () => ({ data: [] }),
+			},
+		};
+		ctx.runtimeManager = {
+			getRuntime: () => ({ client: busyClient, state: "ready", url: "http://x" }),
+			release: () => {},
+		} as unknown as RuntimeManager;
+
+		const notifications: unknown[] = [];
+		const { server, handlers } = fakeServer();
+		registerOdeAwait(server, ctx);
+
+		await handlers.get("ode_await")!(
+			{ sessionId: "s1", timeoutMs: 0 },
+			{
+				sendNotification: async (n: unknown) => {
+					notifications.push(n);
+				},
+			},
+		);
+
+		expect(notifications).toEqual([]);
 	});
 });
 

@@ -39,17 +39,20 @@ export function sessionResultPayload(current: SessionEntry): Record<string, unkn
 		errorCode: current.errorCode,
 		hasFinalText: current.hasFinalText,
 		answer: current.answer,
+		currentActivity: current.currentActivity,
 	};
 }
 
 /**
  * Poll until terminal or timeout. timeoutMs=0 means one instant refresh (former ode_status).
  * Exported so ode_delegate(waitMs) can reuse the same loop.
+ * Optional onTick fires once per poll iteration after refresh (for progress notifications).
  */
 export async function awaitSession(
 	ctx: DelegateContext,
 	sessionId: string,
 	timeoutMs: number,
+	onTick?: (entry: SessionEntry) => void,
 ): Promise<SessionEntry> {
 	const entry = ctx.registry.get(sessionId);
 	if (!entry) {
@@ -62,7 +65,12 @@ export async function awaitSession(
 	let current = entry;
 	while (true) {
 		current = await refreshSessionStatus(ctx, current);
-		ctx.logger.debug("session_status", { sessionId: current.id, status: current.status });
+		onTick?.(current);
+		ctx.logger.debug("session_status", {
+			sessionId: current.id,
+			status: current.status,
+			currentActivity: current.currentActivity,
+		});
 		if (ctx.registry.isTerminal(current.status) || Date.now() >= deadline) break;
 		await sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
 	}
@@ -90,11 +98,12 @@ export function registerOdeAwait(server: McpServer, ctx: DelegateContext): void 
 			title: "Await a delegated OpenCode session",
 			description:
 				"Blocks (up to a clamped timeout) until the session started by ode_delegate finishes, then returns its " +
-				'final status (plus a capped `answer` when text is available). Pass timeoutMs: 0 for a single ' +
+				'final status (plus a capped `answer` when text is available). While still running, may include ' +
+				'`currentActivity` (e.g. `tool:bash …` or `thinking`). Pass timeoutMs: 0 for a single ' +
 				'non-blocking status check. Returns status:"running"/"starting" if the timeout elapses first — call again to keep waiting.',
 			inputSchema: awaitInputShape,
 		},
-		async (args: AwaitInput) => {
+		async (args: AwaitInput, extra?) => {
 			const entry = ctx.registry.get(args.sessionId);
 			if (!entry) {
 				return failError(
@@ -109,7 +118,26 @@ export function registerOdeAwait(server: McpServer, ctx: DelegateContext): void 
 			}
 
 			const requested = args.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-			const current = await awaitSession(ctx, args.sessionId, requested);
+			const clamped = Math.min(MAX_TIMEOUT_MS, Math.max(0, requested));
+			const progressToken = extra?._meta?.progressToken;
+			let tickCount = 0;
+			const onTick =
+				progressToken !== undefined && extra?.sendNotification
+					? (current: SessionEntry) => {
+							tickCount += 1;
+							void extra.sendNotification({
+								method: "notifications/progress",
+								params: {
+									progressToken,
+									progress: tickCount,
+									total: clamped > 0 ? Math.max(1, Math.ceil(clamped / POLL_INTERVAL_MS)) : 1,
+									message: current.currentActivity ?? current.status,
+								},
+							});
+						}
+					: undefined;
+
+			const current = await awaitSession(ctx, args.sessionId, requested, onTick);
 			return ok(sessionResultPayload(current));
 		},
 	);

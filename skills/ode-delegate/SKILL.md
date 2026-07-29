@@ -43,6 +43,7 @@ Contracts: [reference/tools.md](reference/tools.md).
    (`prompt` and `promptPath` are mutually exclusive).
 3. If you did not pass `waitMs` (or it timed out still running): `ode_await({ sessionId, timeoutMs? })`
    until `"done"` / `"error"` / `"cancelled"` (treat `"starting"` like `"running"` — just call again).
+   When status is still running and `currentActivity` is present, narrate it briefly before the next await.
 4. On `"error"`, read `errorMessage` / `errorCode` ([reference/errors.md](reference/errors.md)).
 5. On `"done"`, prefer the capped `answer` field; if missing/empty when text was expected →
    `ode_transcript({ includeToolCalls: true })`, then `ode_delegate({ sessionId, prompt })` with a
@@ -90,7 +91,7 @@ ode_delegate({ sessionId, prompt: "Write a short summary of what you changed." }
 
 1. Every `ode_delegate` has a matching `ode_await` (or finished via `waitMs`) before you report done
 2. `"error"` is read from `errorMessage`/`errorCode`, not guessed
-3. Surface `previewUrl` when useful for the user to watch the session
+3. Surface `previewUrl` when useful for the user to watch the session; when `ode_await` returns `currentActivity` while still running, briefly narrate it in chat (e.g. “Delegate is currently running `tool:bash`…”) before polling again
 4. On `"done"`, prefer `answer`; if false/absent `hasFinalText` when text expected → transcript (+ resume nudge)
 5. `ode_cancel` unused long-running sessions before ending a long turn
 

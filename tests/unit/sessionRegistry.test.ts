@@ -190,4 +190,53 @@ describe("SessionRegistry", () => {
 
 		expect(registry.countsByStatus()).toEqual({ starting: 1, running: 1, done: 0, error: 0, cancelled: 0 });
 	});
+
+	it("setCurrentActivity updates a live session", () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "s1", runtimeKey: "default", previewUrl: "u" });
+
+		registry.setCurrentActivity("s1", "tool:bash ls");
+
+		expect(registry.get("s1")?.currentActivity).toBe("tool:bash ls");
+	});
+
+	it("setCurrentActivity is a no-op on terminal sessions", () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "s1", runtimeKey: "default", previewUrl: "u" });
+		registry.finalizeIfRunning("s1", "done");
+
+		registry.setCurrentActivity("s1", "tool:bash ls");
+
+		expect(registry.get("s1")?.currentActivity).toBeUndefined();
+	});
+
+	it("finalizeIfRunning clears currentActivity", () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "s1", runtimeKey: "default", previewUrl: "u" });
+		registry.setCurrentActivity("s1", "thinking");
+
+		registry.finalizeIfRunning("s1", "done");
+
+		expect(registry.get("s1")?.currentActivity).toBeUndefined();
+	});
+
+	it("failStarting clears currentActivity", () => {
+		const registry = new SessionRegistry();
+		registry.createPending({ id: "s1" });
+		registry.setCurrentActivity("s1", "thinking");
+
+		registry.failStarting("s1", "boom", "RUNTIME_STARTUP_FAILED");
+
+		expect(registry.get("s1")?.currentActivity).toBeUndefined();
+	});
+
+	it("markRuntimeDead clears currentActivity on affected sessions", () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "s1", runtimeKey: "default", previewUrl: "u" });
+		registry.setCurrentActivity("s1", "tool:read");
+
+		registry.markRuntimeDead("default", "process exited unexpectedly (code 1)");
+
+		expect(registry.get("s1")?.currentActivity).toBeUndefined();
+	});
 });

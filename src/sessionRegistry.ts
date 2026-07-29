@@ -21,6 +21,8 @@ export interface SessionEntry {
 	hasFinalText: boolean | undefined;
 	/** Capped final assistant text, set when a session reaches a terminal status with text. */
 	answer: string | undefined;
+	/** Best-effort "what the subagent is doing right now" while running (e.g. `tool:bash …` / `thinking`). Cleared on terminal. */
+	currentActivity: string | undefined;
 }
 
 export type FinalizePatch = Partial<Pick<SessionEntry, "hasFinalText" | "errorCode" | "answer">>;
@@ -73,6 +75,7 @@ export class SessionRegistry {
 			errorCode: undefined,
 			hasFinalText: undefined,
 			answer: undefined,
+			currentActivity: undefined,
 		};
 		this.entries.set(params.id, entry);
 		return entry;
@@ -100,6 +103,7 @@ export class SessionRegistry {
 			errorCode: undefined,
 			hasFinalText: undefined,
 			answer: undefined,
+			currentActivity: undefined,
 		};
 		this.entries.set(params.id, entry);
 		return entry;
@@ -136,9 +140,21 @@ export class SessionRegistry {
 		entry.errorCode = code;
 		entry.hasFinalText = false;
 		entry.answer = undefined;
+		entry.currentActivity = undefined;
 		entry.updatedAt = this.now();
 		entry.terminalAt = entry.updatedAt;
 		return true;
+	}
+
+	/**
+	 * Updates the informational "what is happening now" string for a still-live
+	 * session. No-op if the entry is missing or already terminal.
+	 */
+	setCurrentActivity(id: string, activity: string | undefined): void {
+		const entry = this.entries.get(id);
+		if (!entry || TERMINAL_STATUSES.has(entry.status)) return;
+		entry.currentActivity = activity;
+		entry.updatedAt = this.now();
 	}
 
 	get(id: string): SessionEntry | undefined {
@@ -157,6 +173,7 @@ export class SessionRegistry {
 			entry.hasFinalText = undefined;
 			entry.errorCode = undefined;
 			entry.answer = undefined;
+			entry.currentActivity = undefined;
 		}
 		return entry;
 	}
@@ -174,6 +191,7 @@ export class SessionRegistry {
 		entry.errorMessage = errorMessage;
 		entry.updatedAt = this.now();
 		entry.terminalAt = entry.updatedAt;
+		entry.currentActivity = undefined;
 		if (patch?.hasFinalText !== undefined) entry.hasFinalText = patch.hasFinalText;
 		if (patch?.errorCode !== undefined) entry.errorCode = patch.errorCode;
 		if (patch?.answer !== undefined) entry.answer = patch.answer;
@@ -189,6 +207,7 @@ export class SessionRegistry {
 				entry.errorMessage = message;
 				entry.hasFinalText = false;
 				entry.answer = undefined;
+				entry.currentActivity = undefined;
 				entry.updatedAt = this.now();
 				entry.terminalAt = entry.updatedAt;
 				affected.push(entry);
