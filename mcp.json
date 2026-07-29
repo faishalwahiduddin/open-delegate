@@ -1,8 +1,8 @@
 {
-  "mcpServers": {
-    "open-delegate": {
-      "command": "node",
-      "args": ["dist/index.js"]
-    }
-  }
+	"mcpServers": {
+		"open-delegate": {
+			"command": "npx",
+			"args": ["-y", "@verbalize/open-delegate"]
+		}
+	}
 }

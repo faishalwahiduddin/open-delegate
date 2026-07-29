@@ -121,7 +121,7 @@ describe("RuntimeManager", () => {
 
 		runtime.__triggerCrash();
 
-		expect(onCrash).toHaveBeenCalledWith("default", { code: 1, signal: null });
+		expect(onCrash).toHaveBeenCalledWith("default", { code: 1, signal: null, pid: 4242 });
 		expect(manager.getRuntime(key)).toBeUndefined();
 
 		const second = await manager.acquire();

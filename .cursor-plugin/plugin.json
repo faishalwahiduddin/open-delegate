@@ -1,9 +1,15 @@
 {
-  "name": "open-delegate",
-  "description": "Delegate work to background OpenCode agent sessions from Cursor via a bundled MCP server (ode_delegate/ode_await/ode_status/ode_transcript/ode_cancel/ode_resume).",
-  "version": "0.1.0-alpha",
-  "author": {
-    "name": "open-delegate"
-  },
-  "skills": "./skills/"
+	"name": "open-delegate",
+	"version": "0.1.0-alpha",
+	"description": "Delegate work to background OpenCode agent sessions from Cursor via a bundled MCP server (ode_delegate/ode_await/ode_status/ode_transcript/ode_cancel/ode_resume).",
+	"author": {
+		"name": "Verbalize"
+	},
+	"homepage": "https://github.com/Verbalize-public/open-delegate",
+	"repository": "https://github.com/Verbalize-public/open-delegate",
+	"license": "MIT",
+	"keywords": ["mcp", "opencode", "delegate", "background-agent", "cursor"],
+	"logo": "assets/logo.png",
+	"skills": "./skills/",
+	"rules": "./rules/"
 }

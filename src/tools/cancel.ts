@@ -1,7 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { DelegateContext } from "../context.js";
-import { describeError, fail, ok } from "../mcpResult.js";
+import { describeError, failError, ok } from "../mcpResult.js";
+
+const TOOL_NAME = "ode_cancel";
 
 export const cancelInputShape = {
 	sessionId: z.string().min(1).describe("Session id returned by ode_delegate."),
@@ -21,11 +23,24 @@ export function registerOdeCancel(server: McpServer, ctx: DelegateContext): void
 		async (args: CancelInput) => {
 			const entry = ctx.registry.get(args.sessionId);
 			if (!entry) {
-				return fail(`Unknown sessionId "${args.sessionId}". It may have already been pruned, or was never created by ode_delegate.`);
+				return failError("SESSION_NOT_FOUND", `Unknown sessionId "${args.sessionId}". It may have already been pruned, or was never created by ode_delegate.`, {
+					fix: "Double-check the sessionId from ode_delegate's response, or re-delegate if it was pruned (>30min past finishing).",
+					logger: ctx.logger,
+					tool: TOOL_NAME,
+				});
 			}
 
 			if (ctx.registry.isTerminal(entry.status)) {
 				return ok({ sessionId: entry.id, status: entry.status, note: "Session had already finished; nothing to cancel." });
+			}
+
+			if (entry.status === "starting") {
+				ctx.registry.setStatus(entry.id, "cancelled");
+				return ok({
+					sessionId: entry.id,
+					status: "cancelled",
+					note: "Cancelled before its opencode session finished starting; the in-flight setup will be discarded once it completes.",
+				});
 			}
 
 			const runtime = ctx.runtimeManager.getRuntime(entry.runtimeKey);
@@ -36,9 +51,13 @@ export function registerOdeCancel(server: McpServer, ctx: DelegateContext): void
 			}
 
 			try {
-				await runtime.client.session.abort({ path: { id: entry.id }, throwOnError: true });
+				await runtime.client.session.abort({ path: { id: entry.opencodeSessionId ?? entry.id }, throwOnError: true });
 			} catch (err) {
-				return fail(`Failed to abort session "${args.sessionId}": ${describeError(err)}`);
+				return failError("SESSION_ABORT_FAILED", `Failed to abort session "${args.sessionId}": ${describeError(err)}`, {
+					fix: "Check runtime health with ode_diagnostics before retrying.",
+					logger: ctx.logger,
+					tool: TOOL_NAME,
+				});
 			}
 
 			const finalized = ctx.registry.finalizeIfRunning(entry.id, "cancelled");

@@ -1,31 +1,58 @@
 {
-  "name": "open-delegate",
-  "version": "0.1.0-alpha",
-  "private": true,
-  "description": "Cursor plugin: MCP bridge that delegates work to OpenCode sessions.",
-  "type": "module",
-  "engines": {
-    "node": ">=18.17.0"
-  },
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "npm run test:unit",
-    "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration --no-file-parallelism",
-    "e2e": "npm run build && node scripts/e2e-smoke.mjs",
-    "validate:skill": "node scripts/validate-skill.mjs"
-  },
-  "license": "MIT",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@opencode-ai/sdk": "^1.18.8",
-    "cross-spawn": "^7.0.6",
-    "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "@types/cross-spawn": "^6.0.6",
-    "@types/node": "^26.1.2",
-    "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
-  }
+	"name": "@verbalize/open-delegate",
+	"version": "0.1.0-alpha",
+	"description": "Cursor plugin: MCP bridge that delegates work to OpenCode sessions.",
+	"type": "module",
+	"engines": {
+		"node": ">=18.17.0"
+	},
+	"bin": {
+		"open-delegate": "dist/index.cjs"
+	},
+	"main": "dist/index.cjs",
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "node scripts/build.mjs",
+		"test": "npm run test:unit",
+		"test:unit": "vitest run tests/unit",
+		"test:integration": "vitest run tests/integration --no-file-parallelism",
+		"e2e": "npm run build && node scripts/e2e-smoke.mjs",
+		"validate:skill": "node scripts/validate-skill.mjs",
+		"register:local": "node scripts/register-local-plugin.mjs",
+		"prepublishOnly": "npm run build"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Verbalize-public/open-delegate.git"
+	},
+	"homepage": "https://github.com/Verbalize-public/open-delegate",
+	"bugs": {
+		"url": "https://github.com/Verbalize-public/open-delegate/issues"
+	},
+	"keywords": [
+		"mcp",
+		"opencode",
+		"cursor",
+		"delegate",
+		"background-agent"
+	],
+	"license": "MIT",
+	"devDependencies": {
+		"@modelcontextprotocol/sdk": "^1.30.0",
+		"@opencode-ai/sdk": "^1.18.8",
+		"@types/cross-spawn": "^6.0.6",
+		"@types/node": "^26.1.2",
+		"cross-spawn": "^7.0.6",
+		"esbuild": "^0.28.1",
+		"typescript": "^7.0.2",
+		"vitest": "^4.1.10",
+		"zod": "^4.4.3"
+	}
 }

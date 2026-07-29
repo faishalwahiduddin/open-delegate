@@ -1,4 +1,5 @@
 import { type ConfigOverride, DEFAULT_RUNTIME_KEY, configKey, overrideConfigEnv, serverDefaultConfigEnv } from "./configSpec.js";
+import type { Logger } from "./log.js";
 import { OpencodeRuntime } from "./runtime.js";
 
 export class RuntimeCapacityError extends Error {
@@ -27,9 +28,11 @@ export interface RuntimeManagerOptions {
 	/** How long an idle (refCount 0) ephemeral override runtime stays warm before being disposed. */
 	graceMs?: number;
 	/** Fired once when a runtime dies unexpectedly (crash or externally killed), after it was ready. */
-	onCrash?: (key: string, info: { code: number | null; signal: string | null }) => void;
+	onCrash?: (key: string, info: { code: number | null; signal: string | null; pid: number | undefined }) => void;
 	/** Injectable for tests; defaults to OpencodeRuntime.start. */
 	startRuntime?: typeof OpencodeRuntime.start;
+	/** Optional event sink, threaded down to every spawned OpencodeRuntime. */
+	logger?: Logger;
 }
 
 const DEFAULT_MAX_RUNTIMES = 4;
@@ -47,12 +50,14 @@ export class RuntimeManager {
 	private readonly graceMs: number;
 	private readonly onCrash?: RuntimeManagerOptions["onCrash"];
 	private readonly startRuntime: typeof OpencodeRuntime.start;
+	private readonly logger?: Logger;
 
 	constructor(options: RuntimeManagerOptions = {}) {
 		this.maxRuntimes = options.maxRuntimes ?? DEFAULT_MAX_RUNTIMES;
 		this.graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
 		this.onCrash = options.onCrash;
 		this.startRuntime = options.startRuntime ?? OpencodeRuntime.start.bind(OpencodeRuntime);
+		this.logger = options.logger;
 	}
 
 	/**
@@ -104,21 +109,27 @@ export class RuntimeManager {
 				: { ...serverDefaultConfigEnv(), ...overrideConfigEnv(entry.config ?? {}) };
 		return this.startRuntime({
 			env,
+			key: entry.key,
+			logger: this.logger,
 			onCrash: (info) => {
+				const pid = entry.runtime?.pid;
 				entry.runtime = undefined;
-				this.onCrash?.(entry.key, info);
+				this.logger?.warn("runtime_exit", { key: entry.key, pid, code: info.code, signal: info.signal });
+				this.onCrash?.(entry.key, { ...info, pid });
 			},
 		});
 	}
 
-	/** Returns the runtime for this key only if it's currently ready; never triggers a spawn. */
-	getRuntime(key: string): OpencodeRuntime | undefined {
+	/** Returns the runtime for this key only if it's currently ready; never triggers a spawn. Accepts undefined so callers with a not-yet-attached session entry don't need a guard. */
+	getRuntime(key: string | undefined): OpencodeRuntime | undefined {
+		if (!key) return undefined;
 		const entry = this.entries.get(key);
 		return entry?.runtime?.state === "ready" ? entry.runtime : undefined;
 	}
 
-	/** Must be called exactly once per successful `acquire()`. */
-	release(key: string): void {
+	/** Must be called exactly once per successful `acquire()`. Accepts undefined as a no-op for symmetry with getRuntime(). */
+	release(key: string | undefined): void {
+		if (!key) return;
 		const entry = this.entries.get(key);
 		if (!entry) return;
 		entry.refCount = Math.max(0, entry.refCount - 1);
@@ -156,12 +167,14 @@ export class RuntimeManager {
 		await Promise.all(disposals);
 	}
 
-	/** Test/debug helper. */
-	snapshot(): Array<{ key: string; state: string; refCount: number }> {
+	/** Test/debug helper; also backs ode_diagnostics. */
+	snapshot(): Array<{ key: string; state: string; refCount: number; opencodePid?: number; url?: string }> {
 		return [...this.entries.values()].map((e) => ({
 			key: e.key,
 			state: e.runtime?.state ?? (e.starting ? "starting" : "dead"),
 			refCount: e.refCount,
+			opencodePid: e.runtime?.pid,
+			url: e.runtime?.url,
 		}));
 	}
 }

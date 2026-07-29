@@ -71,8 +71,22 @@ if (!existsSync(pluginManifestPath)) {
 		const m = JSON.parse(read(pluginManifestPath));
 		if (m.name !== "open-delegate") errors.push(`plugin.json name must be "open-delegate", got ${JSON.stringify(m.name)}`);
 		if (!m.skills) errors.push("plugin.json missing skills field");
+		if (!m.rules) errors.push('plugin.json missing rules field (expected "./rules/")');
 	} catch (e) {
 		errors.push(`plugin.json parse: ${e.message}`);
+	}
+}
+
+const routingRulePath = join(ROOT, "rules", "open-delegate-routing.mdc");
+if (!existsSync(routingRulePath)) {
+	errors.push("missing rules/open-delegate-routing.mdc");
+} else {
+	const ruleText = read(routingRulePath);
+	if (!/alwaysApply:\s*true/.test(ruleText)) {
+		errors.push("rules/open-delegate-routing.mdc: expected alwaysApply: true");
+	}
+	if (!/ode_delegate/.test(ruleText)) {
+		errors.push("rules/open-delegate-routing.mdc: should mention ode_delegate");
 	}
 }
 

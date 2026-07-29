@@ -1,7 +1,10 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
+import { createWriteStream, type WriteStream } from "node:fs";
 import crossSpawn from "cross-spawn";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk";
 import { resolveOpencodeBinary } from "./binaryResolve.js";
+import { describeError } from "./mcpResult.js";
+import type { Logger } from "./log.js";
 
 export type RuntimeState = "starting" | "ready" | "dead";
 
@@ -14,6 +17,10 @@ export interface RuntimeOptions {
 	startupTimeoutMs?: number;
 	/** Called exactly once if the process dies (crash or clean exit) after having started. */
 	onCrash?: (info: { code: number | null; signal: string | null }) => void;
+	/** Optional event sink; when set, emits runtime_spawn/runtime_ready/runtime_startup_failed. */
+	logger?: Logger;
+	/** Runtime pool key (e.g. "default", "override:ab12cd"), included in log events for correlation. */
+	key?: string;
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 20_000;
@@ -101,6 +108,16 @@ function waitForListening(proc: ChildProcess, timeoutMs: number): Promise<string
 	});
 }
 
+/** Best-effort raw stdout+stderr tee to a PID-named file for the process lifetime; never throws. */
+function openTeeStream(logger: Logger | undefined, key: string | undefined, pid: number | undefined): WriteStream | undefined {
+	if (!logger || !key || pid === undefined) return undefined;
+	try {
+		return createWriteStream(logger.opencodeLogPath(pid, key), { flags: "a" });
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * One live `opencode serve` child process plus a connected client. Follows the
  * same stdout "opencode server listening on <url>" contract as
@@ -134,12 +151,38 @@ export class OpencodeRuntime {
 	static async start(options: RuntimeOptions = {}): Promise<OpencodeRuntime> {
 		const resolution = resolveOpencodeBinary();
 		const args = ["serve", "--hostname=127.0.0.1", "--port=0"];
+		const startedAt = Date.now();
+		// NOTE: deliberately NOT passing `shell: resolution.requiresShell` here.
+		// cross-spawn already resolves Windows .cmd/.bat shims, PATHEXT, and
+		// quoting correctly on its own - explicitly passing `shell` disables
+		// all of that built-in handling (see cross-spawn's own README) and
+		// reintroduces the exact ENOENT it exists to prevent. requiresShell
+		// is still surfaced below purely as diagnostic metadata.
 		const proc = crossSpawn(resolution.path, args, {
 			cwd: options.cwd,
 			env: { ...process.env, ...options.env },
 		});
+		options.logger?.info("runtime_spawn", { key: options.key, pid: proc.pid, binaryPath: resolution.path, isShimBinary: resolution.requiresShell });
 
-		const url = await waitForListening(proc, options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS);
+		const teeStream = openTeeStream(options.logger, options.key, proc.pid);
+		if (teeStream) {
+			// The underlying fs.open is async; if the log dir vanishes before it
+			// resolves (or any other write failure occurs), don't let it crash the
+			// process as an unhandled 'error' event.
+			teeStream.on("error", () => {});
+			proc.stdout?.pipe(teeStream, { end: false });
+			proc.stderr?.pipe(teeStream, { end: false });
+			proc.once("exit", () => teeStream.end());
+		}
+
+		let url: string;
+		try {
+			url = await waitForListening(proc, options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS);
+		} catch (err) {
+			options.logger?.error("runtime_startup_failed", { key: options.key, pid: proc.pid, message: describeError(err) });
+			throw err;
+		}
+		options.logger?.info("runtime_ready", { key: options.key, pid: proc.pid, url, elapsedMs: Date.now() - startedAt });
 		return new OpencodeRuntime(proc, url, options.onCrash);
 	}
 
