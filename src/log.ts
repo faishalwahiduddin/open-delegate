@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,8 @@ export interface LogEvent {
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 const DEFAULT_RING_SIZE = 50;
+/** Stop appending to the mcp-*.jsonl file once it reaches this size (default 32 MiB). */
+export const DEFAULT_MAX_LOG_BYTES = 32 * 1024 * 1024;
 
 export interface LoggerOptions {
 	level?: LogLevel;
@@ -21,6 +23,8 @@ export interface LoggerOptions {
 	logDir?: string;
 	pid?: number;
 	ringSize?: number;
+	/** Soft cap for the on-disk mcp-*.jsonl file; further appends are skipped. */
+	maxLogBytes?: number;
 	now?: () => Date;
 	/** Injectable sink for the human-facing line (defaults to stderr — never stdout, which carries MCP JSON-RPC). */
 	write?: (line: string) => void;
@@ -37,6 +41,15 @@ export function resolveLogLevel(env: Record<string, string | undefined> = proces
 	return "info";
 }
 
+/** Best-effort stderr write that never throws (EPIPE / closed pipe must not become uncaughtException). */
+export function safeStderrWrite(line: string): void {
+	try {
+		process.stderr.write(`${line}\n`);
+	} catch {
+		// Broken pipe / closed stdio — swallow. Callers must not re-enter the logger from here.
+	}
+}
+
 /**
  * One-line JSON event log, always mirrored to stderr (safe for stdio MCP — stdout
  * is reserved for JSON-RPC) and best-effort appended to a PID-named file so a
@@ -48,19 +61,24 @@ export class Logger {
 	readonly logDir: string;
 	readonly pid: number;
 	readonly mcpLogPath: string;
+	readonly maxLogBytes: number;
 	private readonly ring: LogEvent[] = [];
 	private readonly ringSize: number;
 	private readonly now: () => Date;
 	private readonly writeLine: (line: string) => void;
 	private fileWriteFailed = false;
+	private fileCapReached = false;
+	/** Prevents logger.error from re-entering while already handling a log write failure. */
+	private reentrant = false;
 
 	constructor(options: LoggerOptions = {}) {
 		this.level = options.level ?? "info";
 		this.pid = options.pid ?? process.pid;
 		this.logDir = options.logDir ?? defaultLogDir();
 		this.ringSize = options.ringSize ?? DEFAULT_RING_SIZE;
+		this.maxLogBytes = options.maxLogBytes ?? DEFAULT_MAX_LOG_BYTES;
 		this.now = options.now ?? (() => new Date());
-		this.writeLine = options.write ?? ((line) => process.stderr.write(`${line}\n`));
+		this.writeLine = options.write ?? safeStderrWrite;
 		this.mcpLogPath = join(this.logDir, `mcp-${this.pid}.jsonl`);
 		try {
 			mkdirSync(this.logDir, { recursive: true });
@@ -75,12 +93,22 @@ export class Logger {
 
 	log(level: LogLevel, event: string, data: Record<string, unknown> = {}): void {
 		if (!this.shouldLog(level)) return;
-		const entry: LogEvent = { ts: this.now().toISOString(), level, event, pid: this.pid, ...data };
-		this.ring.push(entry);
-		if (this.ring.length > this.ringSize) this.ring.shift();
-		const line = JSON.stringify(entry);
-		this.writeLine(line);
-		this.appendToFile(line);
+		if (this.reentrant) return;
+		this.reentrant = true;
+		try {
+			const entry: LogEvent = { ts: this.now().toISOString(), level, event, pid: this.pid, ...data };
+			this.ring.push(entry);
+			if (this.ring.length > this.ringSize) this.ring.shift();
+			const line = JSON.stringify(entry);
+			try {
+				this.writeLine(line);
+			} catch {
+				// Injected sinks (or a buggy default) must never take down the process.
+			}
+			this.appendToFile(line);
+		} finally {
+			this.reentrant = false;
+		}
 	}
 
 	debug(event: string, data?: Record<string, unknown>): void {
@@ -97,8 +125,18 @@ export class Logger {
 	}
 
 	private appendToFile(line: string): void {
-		if (this.fileWriteFailed) return;
+		if (this.fileWriteFailed || this.fileCapReached) return;
 		try {
+			let size = 0;
+			try {
+				size = statSync(this.mcpLogPath).size;
+			} catch {
+				// File does not exist yet.
+			}
+			if (size >= this.maxLogBytes) {
+				this.fileCapReached = true;
+				return;
+			}
 			appendFileSync(this.mcpLogPath, `${line}\n`);
 		} catch {
 			// Directory may be unwritable (permissions, read-only FS); stop retrying a failing syscall every event.

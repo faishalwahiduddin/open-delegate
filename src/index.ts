@@ -40,11 +40,26 @@ async function main(): Promise<void> {
 
 	// Never let a bug here take down the whole bridge silently - every other
 	// in-flight ode_* call and any warm opencode runtime should keep working.
+	// Re-entrancy guard: logger writes to stderr; a closed pipe (EPIPE) must not
+	// call logger.error again or we fill disk with a runaway jsonl (seen: 410G).
+	let handlingFatalLog = false;
+	const safeFatalLog = (event: string, data: Record<string, unknown>): void => {
+		if (handlingFatalLog) return;
+		handlingFatalLog = true;
+		try {
+			logger.error(event, data);
+		} finally {
+			handlingFatalLog = false;
+		}
+	};
 	process.on("uncaughtException", (err) => {
-		logger.error("uncaught_exception", { message: describeError(err), stack: err instanceof Error ? err.stack : undefined });
+		safeFatalLog("uncaught_exception", {
+			message: describeError(err),
+			stack: err instanceof Error ? err.stack : undefined,
+		});
 	});
 	process.on("unhandledRejection", (reason) => {
-		logger.error("unhandled_rejection", { message: describeError(reason) });
+		safeFatalLog("unhandled_rejection", { message: describeError(reason) });
 	});
 	const ctx: DelegateContext = {
 		runtimeManager,

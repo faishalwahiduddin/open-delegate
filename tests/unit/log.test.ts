@@ -82,4 +82,52 @@ describe("Logger", () => {
 		expect(() => logger.info("mcp_start", {})).not.toThrow();
 		expect(lines).toHaveLength(1);
 	});
+
+	it("does not throw when the write sink throws (e.g. EPIPE)", () => {
+		const logger = new Logger({
+			logDir: dir,
+			write: () => {
+				const err = new Error("write EPIPE");
+				(err as NodeJS.ErrnoException).code = "EPIPE";
+				throw err;
+			},
+		});
+
+		expect(() => logger.error("uncaught_exception", { message: "write EPIPE" })).not.toThrow();
+		expect(logger.recentEvents()).toHaveLength(1);
+	});
+
+	it("skips nested log calls while already inside log (re-entrancy)", () => {
+		const events: string[] = [];
+		const logger = new Logger({
+			logDir: dir,
+			write: () => {
+				events.push("outer");
+				logger.error("nested_from_write", {});
+				events.push("after_nested");
+			},
+		});
+
+		logger.info("mcp_start", {});
+		expect(events).toEqual(["outer", "after_nested"]);
+		expect(logger.recentEvents().map((e) => e.event)).toEqual(["mcp_start"]);
+	});
+
+	it("stops appending once maxLogBytes is reached", () => {
+		const logger = new Logger({
+			logDir: dir,
+			write: () => {},
+			pid: 99,
+			maxLogBytes: 80,
+		});
+
+		logger.info("a", { n: 1 });
+		logger.info("b", { n: 2 });
+		logger.info("c", { n: 3 });
+
+		const contents = readFileSync(logger.mcpLogPath, "utf8");
+		const lines = contents.trim().split("\n");
+		expect(lines.length).toBeLessThan(3);
+		expect(lines.length).toBeGreaterThanOrEqual(1);
+	});
 });
