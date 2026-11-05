@@ -6,6 +6,7 @@ import type { DelegateContext } from "./context.js";
 import { Logger, resolveLogLevel } from "./log.js";
 import { describeError } from "./mcpResult.js";
 import { ModelAvailabilityCache } from "./modelAvailability.js";
+import { applyPolicyEnvFile } from "./policyEnvFile.js";
 import { loadModelPolicy } from "./modelPolicy.js";
 import { RuntimeManager } from "./runtimeManager.js";
 import { SessionRegistry } from "./sessionRegistry.js";
@@ -24,6 +25,7 @@ function readVersion(): string {
 }
 
 async function main(): Promise<void> {
+	applyPolicyEnvFile();
 	const logger = new Logger({ level: resolveLogLevel() });
 	const version = readVersion();
 	logger.info("mcp_start", { pid: process.pid, version, logDir: logger.logDir, logLevel: logger.level });

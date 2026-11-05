@@ -36,7 +36,7 @@ function loadBuiltinOdeModels(): readonly string[] {
 }
 
 /** Implicit allow universe when OPEN_DELEGATE_ALLOW_MODELS is unset. */
-const DEFAULT_ALLOW_PREFIXES = ["openrouter/*", "opencode/*"] as const;
+const DEFAULT_ALLOW_PREFIXES = ["openrouter/*", "opencode/*", "opencode-go/*", "9router/*"] as const;
 
 export interface ModelPolicy {
 	/** Raw OPEN_DELEGATE_DEFAULT_MODEL string, if set. */
@@ -57,7 +57,7 @@ export interface ModelPolicy {
 export class ModelNotAllowedError extends Error {
 	constructor(id: string) {
 		super(
-			`Model "${id}" is not on the allow list (OPEN_DELEGATE_ALLOW_MODELS, or default openrouter/* + opencode/*).`,
+			`Model "${id}" is not on the allow list (OPEN_DELEGATE_ALLOW_MODELS, or default openrouter/* + opencode/* + opencode-go/* + 9router/*).`,
 		);
 		this.name = "ModelNotAllowedError";
 	}
@@ -230,7 +230,7 @@ export function formatPolicyForToolDescription(policy: ModelPolicy): string {
 				: `- allow list: ${policy.allowModels.join(", ")}`,
 		);
 	} else {
-		lines.push("- allow list: openrouter/*, opencode/* (default)");
+		lines.push("- allow list: openrouter/*, opencode/*, opencode-go/*, 9router/* (default)");
 	}
 	if (policy.denyModels.length > 0) {
 		lines.push(`- deny list: ${policy.denyModels.join(", ")}`);

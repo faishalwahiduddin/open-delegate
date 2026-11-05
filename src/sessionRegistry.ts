@@ -23,6 +23,8 @@ export interface SessionEntry {
 	answer: string | undefined;
 	/** Best-effort "what the subagent is doing right now" while running (e.g. `tool:bash …` / `thinking`). Cleared on terminal. */
 	currentActivity: string | undefined;
+	/** First poll time we saw idle with a tool-only last assistant (no text anywhere yet). Used to defer premature `done`. */
+	toolOnlyIdleSince: number | undefined;
 }
 
 export type FinalizePatch = Partial<Pick<SessionEntry, "hasFinalText" | "errorCode" | "answer">>;
@@ -76,6 +78,7 @@ export class SessionRegistry {
 			hasFinalText: undefined,
 			answer: undefined,
 			currentActivity: undefined,
+			toolOnlyIdleSince: undefined,
 		};
 		this.entries.set(params.id, entry);
 		return entry;
@@ -104,6 +107,7 @@ export class SessionRegistry {
 			hasFinalText: undefined,
 			answer: undefined,
 			currentActivity: undefined,
+			toolOnlyIdleSince: undefined,
 		};
 		this.entries.set(params.id, entry);
 		return entry;
@@ -174,6 +178,7 @@ export class SessionRegistry {
 			entry.errorCode = undefined;
 			entry.answer = undefined;
 			entry.currentActivity = undefined;
+			entry.toolOnlyIdleSince = undefined;
 		}
 		return entry;
 	}
@@ -195,7 +200,45 @@ export class SessionRegistry {
 		if (patch?.hasFinalText !== undefined) entry.hasFinalText = patch.hasFinalText;
 		if (patch?.errorCode !== undefined) entry.errorCode = patch.errorCode;
 		if (patch?.answer !== undefined) entry.answer = patch.answer;
+		entry.toolOnlyIdleSince = undefined;
 		return true;
+	}
+
+	/** Marks the start of an idle + tool-only-last-assistant window (no-op if already set). */
+	noteToolOnlyIdle(id: string, at: number): void {
+		const entry = this.entries.get(id);
+		if (!entry || TERMINAL_STATUSES.has(entry.status)) return;
+		if (entry.toolOnlyIdleSince === undefined) entry.toolOnlyIdleSince = at;
+		entry.updatedAt = this.now();
+	}
+
+	clearToolOnlyIdle(id: string): void {
+		const entry = this.entries.get(id);
+		if (!entry) return;
+		entry.toolOnlyIdleSince = undefined;
+	}
+
+	/** OpenCode resumed after we prematurely marked `done` without text. */
+	reopenRunning(id: string): boolean {
+		const entry = this.entries.get(id);
+		if (!entry || entry.status !== "done") return false;
+		entry.status = "running";
+		entry.terminalAt = undefined;
+		entry.hasFinalText = undefined;
+		entry.answer = undefined;
+		entry.toolOnlyIdleSince = undefined;
+		entry.currentActivity = undefined;
+		entry.updatedAt = this.now();
+		return true;
+	}
+
+	/** Session already `done` but a later poll found assistant text (or a reconcile pass). */
+	patchDoneAnswer(id: string, hasFinalText: boolean, answer: string | undefined): void {
+		const entry = this.entries.get(id);
+		if (!entry || entry.status !== "done") return;
+		entry.hasFinalText = hasFinalText;
+		entry.answer = answer;
+		entry.updatedAt = this.now();
 	}
 
 	/** Called when a runtime crashes: every non-terminal session pinned to it becomes an error. */

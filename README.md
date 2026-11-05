@@ -90,6 +90,18 @@ Then **Cursor → Developer: Reload Window**. Customize → MCP Tools should lis
 
 `register:local` syncs the plugin into `~/.cursor/plugins/local/open-delegate` with an `mcp.json` that runs `node <checkout>/dist/index.cjs` (avoids the `npx` 404 while the package is unpublished), and registers a `workspaceOpen` hook so Cursor loads that path. Re-run after moving the repo, pulling changes, or editing `src/` (rebuild first).
 
+### Plan **Build** → OpenCode (optional hook)
+
+Cursor’s Plan **Build** button sends a default prompt that pushes local `TodoWrite` + file edits. To append a **mandatory `ode_delegate` first** policy when that template is detected:
+
+```bash
+node scripts/install-plan-build-hook.mjs
+```
+
+Then reload Cursor. The hook runs on `beforeSubmitPrompt` (user-level `~/.cursor/hooks.json`). Disable for one session: `OPEN_DELEGATE_PLAN_HOOK=0`. Skip delegation for a single message: include **Cursor only** or **do not use OpenCode** in the prompt.
+
+Also pair with the user-level Cursor rule `~/.cursor/rules/plan-execute-opencode.mdc` (`alwaysApply: true` — all projects). Do not duplicate it per repo; the Plan Build hook above complements that rule.
+
 <details>
 <summary>Pin a default model / policy</summary>
 

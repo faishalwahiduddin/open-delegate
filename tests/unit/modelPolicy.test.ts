@@ -114,6 +114,13 @@ describe("resolveDelegateModel", () => {
 		expect(() => resolveDelegateModel("anthropic/claude-sonnet-4-5", base)).toThrow(ModelNotAllowedError);
 	});
 
+	it("allows opencode-go by default", () => {
+		expect(resolveDelegateModel("opencode-go/deepseek-v4.1-flash", base)).toEqual({
+			providerID: "opencode-go",
+			modelID: "deepseek-v4.1-flash",
+		});
+	});
+
 	it("rejects when explicit allow list does not match", () => {
 		const policy = loadModelPolicy({ OPEN_DELEGATE_ALLOW_MODELS: "opencode/*" });
 		expect(() => resolveDelegateModel("openrouter/qwen/qwen3.7-flash", policy)).toThrow(ModelNotAllowedError);

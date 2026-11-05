@@ -27,6 +27,7 @@
 		"validate:skill": "node scripts/validate-skill.mjs",
 		"refresh:models": "node scripts/refresh-models.mjs",
 		"register:local": "node scripts/register-local-plugin.mjs",
+		"install:plan-build-hook": "node scripts/install-plan-build-hook.mjs",
 		"prepublishOnly": "npm run build"
 	},
 	"repository": {

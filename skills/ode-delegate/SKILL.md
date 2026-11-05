@@ -45,9 +45,9 @@ Contracts: [reference/tools.md](reference/tools.md).
    until `"done"` / `"error"` / `"cancelled"` (treat `"starting"` like `"running"` — just call again).
    When status is still running and `currentActivity` is present, narrate it briefly before the next await.
 4. On `"error"`, read `errorMessage` / `errorCode` ([reference/errors.md](reference/errors.md)).
-5. On `"done"`, prefer the capped `answer` field; if missing/empty when text was expected →
-   `ode_transcript({ includeToolCalls: true })`, then `ode_delegate({ sessionId, prompt })` with a
-   “write the answer” nudge.
+5. On `"done"`, prefer the capped `answer` field. `ode_await` keeps polling while status is
+   `"done"` but `hasFinalText` is false until timeout (summary may land after a tool-only turn).
+   If still no `answer` → `ode_transcript({ includeToolCalls: true })`, then resume nudge if needed.
 6. Need full history? `ode_transcript({ sessionId })`.
 
 Never tight-loop `ode_await({ timeoutMs: 0 })` — prefer one sized `ode_await`.
@@ -71,7 +71,7 @@ Paid cheap mutate:
 
 ```text
 ode_delegate({ model: "openrouter/z-ai/glm-5.2", prompt: "Implement the change in src/… only." })
-→ ode_await({ sessionId, timeoutMs: 120000 })
+→ ode_await({ sessionId, timeoutMs: 600000 })
 ```
 
 Resume a finished session:

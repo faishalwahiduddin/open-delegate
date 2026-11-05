@@ -10,6 +10,8 @@ const TOOL_OUTPUT_PREVIEW_CHARS = 300;
 const STUCK_LOG_TAIL_BYTES = 8 * 1024;
 /** Cap for the inline `answer` field returned by ode_await / ode_delegate(waitMs). */
 export const ANSWER_CAP_CHARS = 4_000;
+/** After idle + tool-only last assistant (no text in any assistant message), wait this long before `done`. */
+export const TOOL_ONLY_DONE_GRACE_MS = 5_000;
 const AUTH_BUDGET_LOG_RE = /auth|401|403|402|budget|credit|quota|billing|api.?key|unauthorized/i;
 const AUTH_NAME_RE = /^ProviderAuthError$/i;
 const AUTH_TEXT_RE = /auth|401|403|unauthorized|api.?key|invalid.?key|forbidden/i;
@@ -21,6 +23,17 @@ export function extractText(parts: Part[]): string {
 		.map((part) => part.text)
 		.join("\n")
 		.trim();
+}
+
+/** Newest assistant message that contains non-empty text (not just the last message). */
+export function findLatestAssistantText(list: Array<{ info: Message; parts: Part[] }>): string {
+	for (let i = list.length - 1; i >= 0; i--) {
+		const { info, parts } = list[i]!;
+		if (info.role !== "assistant") continue;
+		const text = extractText(parts);
+		if (text.length > 0) return text;
+	}
+	return "";
 }
 
 function countToolParts(parts: Part[]): number {
@@ -224,6 +237,11 @@ export async function refreshSessionStatus(
 	entry: SessionEntry,
 	now: () => number = Date.now,
 ): Promise<SessionEntry> {
+	if (entry.status === "error" || entry.status === "cancelled") return entry;
+	if (entry.status === "done" && entry.hasFinalText === true) return entry;
+	if (entry.status === "done" && entry.hasFinalText === false) {
+		return reconcileDoneWithoutFinalText(deps, entry, now);
+	}
 	if (deps.registry.isTerminal(entry.status)) return entry;
 	// Still being set up in the background by ode_delegate (see tools/delegate.ts) -
 	// no runtime/opencode session exists yet, nothing to poll. It owns this transition.
@@ -252,11 +270,10 @@ export async function refreshSessionStatus(
 	const sessionStatus = statusMap?.[opencodeSessionId];
 	const inFlight = sessionStatus?.type === "busy" || sessionStatus?.type === "retry";
 
-	let lastMessage: { info: Message; parts: Part[] } | undefined;
+	let messageList: Array<{ info: Message; parts: Part[] }>;
 	try {
 		const res = await runtime.client.session.messages({ path: { id: opencodeSessionId }, throwOnError: true });
-		const list = res.data as Array<{ info: Message; parts: Part[] }>;
-		lastMessage = list.at(-1);
+		messageList = res.data as Array<{ info: Message; parts: Part[] }>;
 	} catch (err) {
 		// Unknown whether text was produced — leave hasFinalText unset.
 		const finalized = deps.registry.finalizeIfRunning(
@@ -268,11 +285,17 @@ export async function refreshSessionStatus(
 		return deps.registry.get(entry.id) ?? entry;
 	}
 
+	const lastMessage = messageList.at(-1);
+
+	if (inFlight) {
+		deps.registry.clearToolOnlyIdle(entry.id);
+	}
+
 	if (lastMessage && lastMessage.info.role === "assistant") {
 		const assistant = lastMessage.info as AssistantMessage;
-		const text = extractText(lastMessage.parts);
-		const hasFinalText = text.length > 0;
-		const answer = hasFinalText ? truncate(text, ANSWER_CAP_CHARS) : undefined;
+		const latestText = findLatestAssistantText(messageList);
+		const hasFinalText = latestText.length > 0;
+		const answer = hasFinalText ? truncate(latestText, ANSWER_CAP_CHARS) : undefined;
 
 		if (assistant.error) {
 			const classified = classifyAssistantError(assistant.error);
@@ -297,6 +320,22 @@ export async function refreshSessionStatus(
 			const activity = describeCurrentActivity(lastMessage.parts) ?? "thinking";
 			deps.registry.setCurrentActivity(entry.id, activity);
 			return deps.registry.get(entry.id) ?? entry;
+		}
+
+		const lastText = extractText(lastMessage.parts);
+		const toolOnlyLast =
+			lastText.length === 0 && countToolParts(lastMessage.parts) > 0 && !hasFinalText;
+		if (toolOnlyLast) {
+			const idleSince = entry.toolOnlyIdleSince ?? now();
+			if (entry.toolOnlyIdleSince === undefined) {
+				deps.registry.noteToolOnlyIdle(entry.id, idleSince);
+			}
+			if (now() - idleSince < TOOL_ONLY_DONE_GRACE_MS) {
+				deps.registry.setCurrentActivity(entry.id, "waiting for final summary");
+				return deps.registry.get(entry.id) ?? entry;
+			}
+		} else {
+			deps.registry.clearToolOnlyIdle(entry.id);
 		}
 
 		const finalized = deps.registry.finalizeIfRunning(entry.id, "done", undefined, { hasFinalText, answer });
@@ -345,6 +384,53 @@ export async function refreshSessionStatus(
 		errorCode: logHit ? "PROVIDER_AUTH" : undefined,
 	});
 	if (finalized) deps.runtimeManager.release(entry.runtimeKey);
+	return deps.registry.get(entry.id) ?? entry;
+}
+
+/**
+ * A session marked `done` with hasFinalText:false may still be running in OpenCode,
+ * or may have gained a summary message after we finalized on a tool-only turn.
+ */
+async function reconcileDoneWithoutFinalText(
+	deps: RefreshSessionDeps,
+	entry: SessionEntry,
+	now: () => number,
+): Promise<SessionEntry> {
+	const opencodeSessionId = entry.opencodeSessionId ?? entry.id;
+	const runtime = deps.runtimeManager.getRuntime(entry.runtimeKey);
+	if (!runtime) return entry;
+
+	let statusMap: Record<string, { type: string }> | undefined;
+	try {
+		const res = await runtime.client.session.status({ throwOnError: true });
+		statusMap = res.data as Record<string, { type: string }>;
+	} catch {
+		return entry;
+	}
+
+	const sessionStatus = statusMap?.[opencodeSessionId];
+	const inFlight = sessionStatus?.type === "busy" || sessionStatus?.type === "retry";
+
+	let messageList: Array<{ info: Message; parts: Part[] }>;
+	try {
+		const res = await runtime.client.session.messages({ path: { id: opencodeSessionId }, throwOnError: true });
+		messageList = res.data as Array<{ info: Message; parts: Part[] }>;
+	} catch {
+		return entry;
+	}
+
+	if (inFlight) {
+		if (deps.registry.reopenRunning(entry.id)) {
+			return refreshSessionStatus(deps, deps.registry.get(entry.id)!, now);
+		}
+		return entry;
+	}
+
+	const latestText = findLatestAssistantText(messageList);
+	if (latestText.length > 0) {
+		deps.registry.patchDoneAnswer(entry.id, true, truncate(latestText, ANSWER_CAP_CHARS));
+	}
+
 	return deps.registry.get(entry.id) ?? entry;
 }
 

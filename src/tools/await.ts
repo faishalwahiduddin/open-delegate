@@ -6,9 +6,17 @@ import { refreshSessionStatus } from "../opencodeHelpers.js";
 import type { SessionEntry } from "../sessionRegistry.js";
 
 const TOOL_NAME = "ode_await";
-const MAX_TIMEOUT_MS = 120_000;
+/** Long delegates (multi-file plans) can run many minutes; clamp still applies per call. */
+const MAX_TIMEOUT_MS = 600_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 750;
+
+/** Terminal for the await loop — `done` without text may still gain a summary; keep polling until timeout. */
+function isAwaitSettled(status: SessionEntry["status"], hasFinalText: boolean | undefined): boolean {
+	if (status === "running" || status === "starting") return false;
+	if (status === "done" && hasFinalText === false) return false;
+	return true;
+}
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,11 +79,11 @@ export async function awaitSession(
 			status: current.status,
 			currentActivity: current.currentActivity,
 		});
-		if (ctx.registry.isTerminal(current.status) || Date.now() >= deadline) break;
+		if (isAwaitSettled(current.status, current.hasFinalText) || Date.now() >= deadline) break;
 		await sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
 	}
 
-	if (!ctx.registry.isTerminal(current.status)) {
+	if (!isAwaitSettled(current.status, current.hasFinalText)) {
 		ctx.logger.debug("await_timeout", { sessionId: current.id, timeoutMs: clamped });
 	}
 

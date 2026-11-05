@@ -10,9 +10,11 @@ import {
 	extractText,
 	fetchTranscript,
 	findAuthBudgetLogLine,
+	findLatestAssistantText,
 	formatToolCallLine,
 	refreshSessionStatus,
 	summarizeAssistantError,
+	TOOL_ONLY_DONE_GRACE_MS,
 } from "../../src/opencodeHelpers.js";
 import type { RuntimeManager } from "../../src/runtimeManager.js";
 import { SessionRegistry } from "../../src/sessionRegistry.js";
@@ -239,15 +241,74 @@ describe("refreshSessionStatus", () => {
 		expect(deps.released).toEqual(["default"]);
 	});
 
-	it("sets hasFinalText false for a tool-only terminal turn", async () => {
-		const registry = new SessionRegistry();
+	it("sets hasFinalText false for a tool-only terminal turn after grace", async () => {
+		const clock = { t: 0, now: () => clock.t };
+		const registry = new SessionRegistry({ now: clock.now });
 		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const client = fakeClient([userMsg("hi"), assistantMsg([toolPart("glob", "completed")])], undefined);
 		const deps = makeDeps(client, registry);
 
-		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
+		const mid = await refreshSessionStatus(deps, registry.get("ses1")!, clock.now);
+		expect(mid.status).toBe("running");
+		expect(deps.released).toEqual([]);
+
+		clock.t = TOOL_ONLY_DONE_GRACE_MS + 1;
+		const entry = await refreshSessionStatus(deps, registry.get("ses1")!, clock.now);
 		expect(entry.status).toBe("done");
 		expect(entry.hasFinalText).toBe(false);
+		expect(deps.released).toEqual(["default"]);
+	});
+
+	it("uses the latest assistant text even when the last turn is tool-only", async () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
+		const client = fakeClient(
+			[userMsg("hi"), assistantMsg([textPart("Step 1: done")]), assistantMsg([toolPart("bash", "completed")])],
+			undefined,
+		);
+		const deps = makeDeps(client, registry);
+
+		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
+		expect(entry.status).toBe("done");
+		expect(entry.hasFinalText).toBe(true);
+		expect(entry.answer).toBe("Step 1: done");
+	});
+
+	it("patches done sessions when a summary appears after premature finalize", async () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
+		registry.finalizeIfRunning("ses1", "done", undefined, { hasFinalText: false });
+		const client = fakeClient(
+			[userMsg("hi"), assistantMsg([toolPart("glob", "completed")]), assistantMsg([textPart("All steps complete.")])],
+			undefined,
+		);
+		const deps = makeDeps(client, registry);
+
+		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
+		expect(entry.status).toBe("done");
+		expect(entry.hasFinalText).toBe(true);
+		expect(entry.answer).toBe("All steps complete.");
+	});
+
+	it("reopens done without text when OpenCode is busy again", async () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
+		registry.finalizeIfRunning("ses1", "done", undefined, { hasFinalText: false });
+		const client = fakeClient([userMsg("hi"), assistantMsg([toolPart("bash", "running")])], "busy");
+		const deps = makeDeps(client, registry);
+
+		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
+		expect(entry.status).toBe("running");
+		expect(entry.hasFinalText).toBeUndefined();
+	});
+
+	it("findLatestAssistantText scans newest-first", () => {
+		const list = [
+			userMsg("x"),
+			assistantMsg([textPart("older")]),
+			assistantMsg([textPart("newer")]),
+		];
+		expect(findLatestAssistantText(list)).toBe("newer");
 	});
 
 	it("sets hasFinalText false when the runtime is gone", async () => {
