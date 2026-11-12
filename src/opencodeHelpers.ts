@@ -40,6 +40,11 @@ function countToolParts(parts: Part[]): number {
 	return parts.filter((part) => part.type === "tool").length;
 }
 
+/** True when the message still has tool parts in `running` or `pending`. */
+export function hasInFlightToolParts(parts: Part[]): boolean {
+	return describeCurrentActivity(parts) !== undefined;
+}
+
 function truncate(value: string, max: number): string {
 	if (value.length <= max) return value;
 	return `${value.slice(0, max)}…`;
@@ -322,16 +327,27 @@ export async function refreshSessionStatus(
 			return deps.registry.get(entry.id) ?? entry;
 		}
 
+		// OpenCode often emits a short intent paragraph, then a separate assistant
+		// message with tool calls. Do not finalize while those tools are in flight
+		// just because findLatestAssistantText() found the earlier paragraph.
+		if (hasInFlightToolParts(lastMessage.parts)) {
+			const activity = describeCurrentActivity(lastMessage.parts) ?? "running tools";
+			deps.registry.setCurrentActivity(entry.id, activity);
+			return deps.registry.get(entry.id) ?? entry;
+		}
+
 		const lastText = extractText(lastMessage.parts);
-		const toolOnlyLast =
-			lastText.length === 0 && countToolParts(lastMessage.parts) > 0 && !hasFinalText;
+		const toolOnlyLast = lastText.length === 0 && countToolParts(lastMessage.parts) > 0;
 		if (toolOnlyLast) {
 			const idleSince = entry.toolOnlyIdleSince ?? now();
 			if (entry.toolOnlyIdleSince === undefined) {
 				deps.registry.noteToolOnlyIdle(entry.id, idleSince);
 			}
 			if (now() - idleSince < TOOL_ONLY_DONE_GRACE_MS) {
-				deps.registry.setCurrentActivity(entry.id, "waiting for final summary");
+				deps.registry.setCurrentActivity(
+					entry.id,
+					hasFinalText ? "waiting for follow-up after tools" : "waiting for final summary",
+				);
 				return deps.registry.get(entry.id) ?? entry;
 			}
 		} else {

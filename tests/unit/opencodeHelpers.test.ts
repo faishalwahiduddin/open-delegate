@@ -260,7 +260,8 @@ describe("refreshSessionStatus", () => {
 	});
 
 	it("uses the latest assistant text even when the last turn is tool-only", async () => {
-		const registry = new SessionRegistry();
+		const clock = { t: 0, now: () => clock.t };
+		const registry = new SessionRegistry({ now: clock.now });
 		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
 		const client = fakeClient(
 			[userMsg("hi"), assistantMsg([textPart("Step 1: done")]), assistantMsg([toolPart("bash", "completed")])],
@@ -268,7 +269,12 @@ describe("refreshSessionStatus", () => {
 		);
 		const deps = makeDeps(client, registry);
 
-		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
+		const mid = await refreshSessionStatus(deps, registry.get("ses1")!, clock.now);
+		expect(mid.status).toBe("running");
+		expect(mid.answer).toBeUndefined();
+
+		clock.t = TOOL_ONLY_DONE_GRACE_MS + 1;
+		const entry = await refreshSessionStatus(deps, registry.get("ses1")!, clock.now);
 		expect(entry.status).toBe("done");
 		expect(entry.hasFinalText).toBe(true);
 		expect(entry.answer).toBe("Step 1: done");
@@ -438,5 +444,26 @@ describe("refreshSessionStatus", () => {
 		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
 		expect(entry.status).toBe("done");
 		expect(entry.currentActivity).toBeUndefined();
+	});
+
+	it("stays running when an earlier assistant has text but the latest message has in-flight tools", async () => {
+		const registry = new SessionRegistry();
+		registry.create({ id: "ses1", runtimeKey: "default", previewUrl: "u" });
+		const client = fakeClient(
+			[
+				userMsg("implement the plan"),
+				assistantMsg([textPart("I will read the files first.")]),
+				assistantMsg([toolPart("read", "running", { filePath: "/src/foo.ts" })]),
+			],
+			undefined,
+		);
+		const deps = makeDeps(client, registry);
+
+		const entry = await refreshSessionStatus(deps, registry.get("ses1")!);
+		expect(entry.status).toBe("running");
+		expect(entry.hasFinalText).toBeUndefined();
+		expect(entry.answer).toBeUndefined();
+		expect(entry.currentActivity).toMatch(/tool:read/);
+		expect(deps.released).toEqual([]);
 	});
 });
